@@ -1,4 +1,5 @@
 /* Native macOS window and VI service adapter. No guest frame is synthesized. */
+#define TOTK_FRONTEND_M 1
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
@@ -8,13 +9,66 @@
 #include "runtime.h"
 #include "game_version.h"
 #include "totk_ui_lang.h"
+#include "kept_log.h"
+#include <fcntl.h>
 #include "gamepad_layout.h"
+#define TOTK_HDR_FRONTEND 1
+#include "../third_party/d2r_gfx/gfx/nvn/totk_hdr.h"
 #import "playtime.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_mfx_mode.h"
 #include "../third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
 static NSWindow *window;
 uint64_t dm_nvn_frame_count(void);   /* gfx/nvn/hle_nvn.c: game frames presented so far */
 static CAMetalLayer *metalLayer;
+static _Atomic float hdrHeadroom=1;
+static _Atomic int hdrEnabled;
+static CGColorSpaceRef hdrSDRColorSpace;
+static int hdrSDRRemembered;
+int front_hdr_supported(void){return totk_hdr_available();}
+int front_hdr_enabled(void){return atomic_load(&hdrEnabled);}
+
+float front_hdr_headroom(void){return atomic_load_explicit(&hdrHeadroom,memory_order_relaxed);}
+static void front_hdr_update(void){
+ if(!totk_hdr_available())return;
+ NSScreen *screen=window.screen?:NSScreen.mainScreen;
+ float h=front_hdr_enabled() && screen?(float)screen.maximumExtendedDynamicRangeColorComponentValue:1;
+ if(!isfinite(h)||h<1)h=1;
+ float old=atomic_exchange(&hdrHeadroom,h);
+ if(fabsf(old-h)>0.05f)fprintf(stderr,"[hdr] display %s: current headroom %.3f, potential %.3f (SDR white = 1)\n",screen.localizedName.UTF8String,h,(double)screen.maximumPotentialExtendedDynamicRangeColorComponentValue);
+}
+
+/* Startup and control changes run on the main thread. The presenter applies the
+ * surface format between frames, after draining old GPU work. Off is the original
+ * BGRA8 surface and its original default color space. The HDR canvas keeps sRGB
+ * primaries: a P3 label alone would reinterpret, rather than convert, its colors. */
+static void front_hdr_init(void){
+ if(!totk_hdr_available()){atomic_store(&hdrEnabled,0);return;}
+ char word[32]={0};int on=0;
+ const char *e=getenv("TOTK_HDR");
+ if(e && *e)on=!strcmp(e,"1");
+ else if(runtime_setting_word("hdr.txt",word,sizeof word))on=!strcmp(strtok(word," \t\r\n")?:"","on");
+ atomic_store(&hdrEnabled,totk_hdr_available() && on);
+}
+void front_hdr_present_mode(int enabled){
+ if(!metalLayer || !totk_hdr_available())return;
+ if(!hdrSDRRemembered){hdrSDRColorSpace=metalLayer.colorspace;if(hdrSDRColorSpace)CFRetain(hdrSDRColorSpace);hdrSDRRemembered=1;}
+ BOOL on=!!enabled;MTLPixelFormat format=on?MTLPixelFormatRGBA16Float:MTLPixelFormatBGRA8Unorm;
+ if(metalLayer.pixelFormat==format && metalLayer.wantsExtendedDynamicRangeContent==on)return;
+ CGColorSpaceRef cs=on?CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB):NULL;
+ metalLayer.pixelFormat=format;metalLayer.colorspace=on?cs:hdrSDRColorSpace;metalLayer.wantsExtendedDynamicRangeContent=on;
+ if(cs)CGColorSpaceRelease(cs);
+ fprintf(stderr,"[hdr] surface %s: format %lu, color space %s\n",on?"on":"off",(unsigned long)format,metalLayer.colorspace?[(NSString *)CFBridgingRelease(CGColorSpaceCopyName(metalLayer.colorspace)) UTF8String]:"default");
+}
+static void front_hdr_apply(int enabled){
+ if(!totk_hdr_available())return;
+ atomic_store(&hdrEnabled,!!enabled);
+ runtime_setting_save("hdr.txt",enabled?"on":"off","HDR / EDR");
+ front_hdr_update();
+ fprintf(stderr,"[hdr] EDR %s (key 8); display headroom %.3f\n",enabled?"on":"off",front_hdr_headroom());
+}
+void runtime_front_hdr_set(int enabled){if(NSThread.isMainThread)front_hdr_apply(enabled);else dispatch_async(dispatch_get_main_queue(),^{front_hdr_apply(enabled);});}
+void runtime_front_hdr_toggle(void){dispatch_async(dispatch_get_main_queue(),^{front_hdr_apply(!front_hdr_enabled());});}
+
 static NSView *bootOverlay;
 static NSTextField *bootStage,*bootDetail;
 static NSProgressIndicator *bootProgress;
@@ -178,7 +232,7 @@ static int front_modifier_down(NSEvent *e){
 -(BOOL)acceptsFirstResponder{return YES;}
 /* While the settings panel is open only key 1 (it closes the panel, runtime/input.c) and Esc (closes it here, not the game's
    menu) do anything; releases still go through so nothing stays held. */
--(void)keyDown:(NSEvent *)e{if(textEntryOpen)return;if(settingsOpen&&e.keyCode!=18){if(e.keyCode==53)settings_show(0);return;}runtime_input_key(e.keyCode,1);}
+-(void)keyDown:(NSEvent *)e{if(textEntryOpen)return;if(settingsOpen&&e.keyCode!=18&&e.keyCode!=28&&e.keyCode!=25){if(e.keyCode==53)settings_show(0);return;}runtime_input_key(e.keyCode,1);}
 -(void)keyUp:(NSEvent *)e{runtime_input_key(e.keyCode,0);}
 /* Shift, Control and Option, left and right apart, are keys of the layout (keyboard_map.h); they come as flag changes.
    While the settings panel or text entry is open only their releases go through. */
@@ -487,6 +541,23 @@ void runtime_front_resize_aspect(double ratio){
 }
 @interface TOTKWindowDelegate:NSObject<NSWindowDelegate>
 @end
+/* At quit, when a fault guard caught a read of memory the game had taken away this run (mtl_guard_hits): keep a copy of
+   the log (kept_log.h) and tell the player, who can send it on. Only for a game the player started (TOTK_SLOT_OWNER user):
+   an agent's test closes its game by script, and a dialog would keep it open. */
+static void front_guard_notice(void){
+ const char *owner=getenv("TOTK_SLOT_OWNER");if(!owner||strcmp(owner,"user"))return;
+ extern uint64_t mtl_guard_hits(void);uint64_t n=mtl_guard_hits();if(!n)return;
+ fprintf(stderr,"[totk] quit: fault guards caught %llu reads of memory the game had taken away this run\n",(unsigned long long)n);fflush(stderr);
+ char path[MAXPATHLEN];NSString *kept=nil;
+ if(fcntl(STDERR_FILENO,F_GETPATH,path)==0&&strcmp(path,"/dev/null"))kept=kept_log_save(@(path),@"保护拦截",nil);
+ NSAlert *a=[NSAlert new];
+ a.messageText=@(TOTK_UI("这次游戏中，保护措施拦下了可能导致闪退的问题","This session, a safeguard caught a problem that could have crashed the game"));
+ a.informativeText=kept?[NSString stringWithFormat:@(TOTK_UI("共拦下 %llu 次（读到了游戏已经收回的内存）。游戏没有受影响，最多是某张贴图短暂没更新。\n\n这次的日志已另存为：\n%@","Caught %llu times (reads of memory the game had already taken back). The game was not affected; at most a texture was briefly out of date.\n\nThis session's log was kept as:\n%@")),(unsigned long long)n,kept]
+  :[NSString stringWithFormat:@(TOTK_UI("共拦下 %llu 次（读到了游戏已经收回的内存）。游戏没有受影响。调试日志没有打开，所以没有日志可保存。","Caught %llu times (reads of memory the game had already taken back). The game was not affected. The debug log is off, so there is no log to keep.")),(unsigned long long)n];
+ [a addButtonWithTitle:@(TOTK_UI("好","OK"))];if(kept)[a addButtonWithTitle:@(TOTK_UI("在访达中显示","Show in Finder"))];
+ [NSApp activateIgnoringOtherApps:YES];
+ if([a runModal]==NSAlertSecondButtonReturn&&kept)[NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:kept]]];
+}
 @implementation TOTKWindowDelegate
 -(void)windowDidBecomeKey:(NSNotification *)n{(void)n;front_playtime_tick(NO);atomic_store(&focused,1);if(window.styleMask&NSWindowStyleMaskFullScreen)[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:YES];runtime_oe_push_message(15);front_mouse_update();fprintf(stderr,"[totk] window gained focus\n");front_sr_window();}
 -(void)windowDidResignKey:(NSNotification *)n{(void)n;front_playtime_tick(YES);atomic_store(&focused,0);[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_mouse_update();runtime_input_clear();runtime_oe_push_message(15);fprintf(stderr,"[totk] window lost focus\n");front_sr_window();}
@@ -497,6 +568,7 @@ void runtime_front_resize_aspect(double ratio){
  [(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];
  if(mouseHeld){mouseHeld=NO;CGAssociateMouseAndMouseCursorPosition(true);[NSCursor unhide];}
  runtime_triggers_release();   /* _exit skips atexit; a save can also keep the game running a while without its window */
+ front_guard_notice();
  if(!runtime_fs_save_busy()){fprintf(stderr,"[totk] window closed; graceful guest shutdown pending\n");_exit(0);}
  fprintf(stderr,"[totk] window closed while the game is saving: quitting when the save is done\n");
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
@@ -506,7 +578,7 @@ void runtime_front_resize_aspect(double ratio){
 -(void)windowDidResize:(NSNotification *)n{(void)n;front_sync_drawable();}
 -(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];front_sr_view();}
 -(void)windowDidExitFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_sr_view();}
--(void)windowDidChangeScreen:(NSNotification *)n{(void)n;front_sr_view();}
+-(void)windowDidChangeScreen:(NSNotification *)n{(void)n;front_sr_view();front_hdr_update();}
 /* Whether any part of the window can be seen (TOTK, 2026-10-16 night): macOS stops the display link's callbacks for a
    fully covered window, so presents stop and per-picture measurements of that stretch are void; a test session's log
    says when (the user working in other apps covered the test windows of the frame interpolation tests). */
@@ -515,7 +587,7 @@ static void note_occlusion(const char *when){int v=(window.occlusionState&NSWind
  fprintf(stderr,"[totk] window %s%s (frame %llu)\n",v?"visible":"covered (or on another Space): no presents until it is visible again",when,(unsigned long long)dm_nvn_frame_count());
  front_sr_window();}
 -(void)windowDidChangeOcclusionState:(NSNotification *)n{(void)n;note_occlusion("");}
--(void)windowDidChangeBackingProperties:(NSNotification *)n{(void)n;front_sync_drawable();}
+-(void)windowDidChangeBackingProperties:(NSNotification *)n{(void)n;front_sync_drawable();front_hdr_update();}
 @end
 static TOTKWindowDelegate *windowDelegate;
 int runtime_front_window_visible(void){return atomic_load(&windowVisible);}
@@ -552,10 +624,17 @@ void runtime_front_run(void(*callback)(void)){
   const char *owner=getenv("TOTK_SLOT_OWNER"),*purpose=getenv("TOTK_SLOT_PURPOSE");
   window.title=owner&&*owner&&strcmp(owner,"user")?[NSString stringWithFormat:@(TOTK_UI("测试局（%s）Ver. %s：%s — 存档副本，进度不会存进你的存档，脚本会自己关闭","Test session (%s) Ver. %s: %s — save copy, progress is not saved to your save, the script closes it")),owner,TOTK_GAME_VERSION,purpose&&*purpose?purpose:TOTK_UI("代理测试","agent test")]:[NSString stringWithFormat:@GAME_NAME "  Mac — Ver. %s",TOTK_GAME_VERSION];
   windowDelegate=[TOTKWindowDelegate new];window.delegate=windowDelegate;
+  front_hdr_init();
   front_install_menu();
   window.collectionBehavior|=NSWindowCollectionBehaviorFullScreenPrimary;
   window.contentView=[[TOTKInputView alloc] initWithFrame:NSMakeRect(0,0,ww,wh)];
-  metalLayer=[CAMetalLayer layer];metalLayer.device=MTLCreateSystemDefaultDevice();metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;metalLayer.drawableSize=CGSizeMake(ww,wh);runtime_aspect_view(ww,wh);
+  metalLayer=[CAMetalLayer layer];metalLayer.device=MTLCreateSystemDefaultDevice();metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;
+  if(totk_hdr_available()){
+   front_hdr_present_mode(front_hdr_enabled());front_hdr_update();
+   [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer){(void)timer;front_hdr_update();}];
+   fprintf(stderr,"[hdr] TOTK " TOTK_GAME_VERSION " compose: EDR %s, HDR colorspace extended linear sRGB; off keeps upstream SDR\n",front_hdr_enabled()?"on":"off");
+  }
+  metalLayer.drawableSize=CGSizeMake(ww,wh);runtime_aspect_view(ww,wh);
   metalLayer.framebufferOnly=NO;window.contentView.wantsLayer=YES;window.contentView.layer=metalLayer;
   bootOverlay=[[NSView alloc] initWithFrame:window.contentView.bounds];bootOverlay.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
   bootOverlay.wantsLayer=YES;bootOverlay.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.035 green:0.075 blue:0.09 alpha:1].CGColor;

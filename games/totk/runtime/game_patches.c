@@ -391,6 +391,35 @@ uint64_t runtime_output_size_current(void) {
     uint8_t *page = atomic_load(&output_page);
     return page ? atomic_load((_Atomic uint64_t *)(void *)(page + DP_OUTPUT_SIZE)) : pack_size(1920, 1080);
 }
+/* The settings panel's picture mode is kept between runs in the file TOTK_PICTURE_MODE names (the launcher:
+   <data>/picture-mode.txt), as on 1.4.3 (game_patches_v143.c picture_mode_save / _restore, the same words): off, metalfx,
+   native-2k, native-2k-metalfx, native-4k or 720p. Only a start with automatic output sizes begins in that mode; a size
+   larger than this app's swapchain falls back to the largest one it has. TOTK_OUTPUT_RES=<w>x<h> starts as it says. */
+static void picture_mode_save(uint64_t size) {
+    const char *path = getenv("TOTK_PICTURE_MODE"); if (!path || !*path) return;
+    extern int mfxup_output_enabled(void);
+    const char *mode = mfxup_output_enabled() ? (size == pack_size(2560, 1440) ? "native-2k-metalfx" : "metalfx") : size == pack_size(2560, 1440) ? "native-2k" :
+                       size == pack_size(3840, 2160) ? "native-4k" : size == pack_size(1280, 720) ? "720p" : "off";
+    FILE *f = fopen(path, "w");
+    if (!f || fprintf(f, "%s\n", mode) < 0 || fclose(f)) { fprintf(stderr, "[totk] picture mode: cannot write %s\n", path); return; }
+    fprintf(stderr, "[totk] picture mode %s kept for the next start\n", mode);
+}
+static void picture_mode_restore(uint8_t *page) {
+    const char *path = getenv("TOTK_PICTURE_MODE"); if (!path || !*path || output_full_at_start) return;
+    char mode[32] = ""; FILE *f = fopen(path, "r"); if (!f) return;
+    if (!fgets(mode, sizeof mode, f)) mode[0] = 0;
+    fclose(f); mode[strcspn(mode, "\r\n")] = 0;
+    extern void dm_gfx_set_flag(const char *, int);
+    unsigned w = 1920, h = 1080;
+    if (!strcmp(mode, "native-4k") && output_w >= 3840 && output_h >= 2160) { w = 3840; h = 2160; }
+    else if ((!strcmp(mode, "native-4k") || !strcmp(mode, "native-2k")) && output_w >= 2560 && output_h >= 1440) { w = 2560; h = 1440; }
+    else if (!strcmp(mode, "native-2k-metalfx") && output_w >= 2560 && output_h >= 1440) { w = 2560; h = 1440; dm_gfx_set_flag("mfx_output", 1); dm_gfx_set_flag("mfx_upscale", 1); }
+    else if (!strcmp(mode, "metalfx")) { dm_gfx_set_flag("mfx_output", 1); dm_gfx_set_flag("mfx_upscale", 1); }
+    else if (!strcmp(mode, "720p")) { w = 1280; h = 720; }
+    else if (strcmp(mode, "off")) { fprintf(stderr, "[totk] picture mode: %s holds \"%s\", not off, metalfx, native-2k, native-2k-metalfx, native-4k or 720p; starting off\n", path, mode); return; }
+    atomic_store((_Atomic uint64_t *)(void *)(page + DP_OUTPUT_SIZE), pack_size(w, h));
+    fprintf(stderr, "[totk] picture mode: starts in %s (kept from the last run, %s)\n", mode, path);
+}
 static void patch_output_res(Module *m) {
     unsigned w, h;
     if (CODE_PATCHED_AT_BUILD || !output_res(&w, &h)) return;
@@ -414,6 +443,7 @@ static void patch_output_res(Module *m) {
     atomic_store((_Atomic uint64_t *)(void *)(page + DP_OUTPUT_SIZE), output_full_at_start ? pack_size(w, h) : pack_size(1920, 1080));
     atomic_store((_Atomic uint64_t *)(void *)(page + DP_RENDERER), 0);
     for (int i = 0; i < 5; i++) memcpy(m->base + sites[i].offset, &sites[i].replacement, 4);
+    picture_mode_restore(page);
     atomic_store(&output_page, page);   /* Publish initialized state to the HUD on the main thread. */
     fprintf(stderr, "[totk] output resolution patch: swapchain %ux%u (main+0xe996ac), the game's output %s from the data page (main+0xc630a4); texture heap and Graphics +%llu KiB (HeapDef overlay)\n",
             w, h, output_full_at_start ? "at that size" : "1920x1080 for now", (unsigned long long)(runtime_output_res_extra_bytes() >> 10));
@@ -466,6 +496,7 @@ int runtime_output_mode_set(int mode) {
     fprintf(stderr, "[totk] picture: %s\n", mode == OUTPUT_MODE_720P ? "720p" : mode == OUTPUT_MODE_NATIVE_METALFX ? "native 2K, MetalFX to the window" :
             mode == OUTPUT_MODE_NATIVE ? "native" :
             mode == OUTPUT_MODE_METALFX ? "MetalFX 2K" : "off (1080p)");
+    picture_mode_save(atomic_load((_Atomic uint64_t *)(void *)(output_page + DP_OUTPUT_SIZE)));
     return 1;
 }
 

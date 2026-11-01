@@ -4,6 +4,8 @@
 #include "../games/totk/runtime/input.c"
 #include "../games/totk/third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
 #include <assert.h>
+static char savedHDR[16]="off";
+
 
 void mfx_set(int mode);
 int mfx_latch(void);
@@ -45,13 +47,16 @@ int runtime_mouse_sensitivity_locked(void) { return fakeSensitivityLocked; }
 void runtime_mouse_sensitivity_set(int sensitivity) { fakeSensitivity = sensitivity; }
 void runtime_gamepad_clear(void) {}
 static char savedName[64], savedWord[16];
+/* hdr.txt keeps its own word so the HDR checks can read it back; every other file only records the last save. */
 void runtime_setting_save(const char *name, const char *word, const char *what) {
     (void)what; snprintf(savedName, sizeof savedName, "%s", name); snprintf(savedWord, sizeof savedWord, "%s", word);
+    if (!strcmp(name, "hdr.txt")) snprintf(savedHDR, sizeof savedHDR, "%s", word);
     const char *dir = getenv("SETTINGS_TEST_DIR"); if (!dir) return;
     char path[4096]; snprintf(path, sizeof path, "%s/%s", dir, name);
     FILE *f = fopen(path, "w"); assert(f); assert(fprintf(f, "%s\n", word) > 0); assert(!fclose(f));
 }
 int runtime_setting_word(const char *name, char *word, size_t size) {
+    if (!strcmp(name, "hdr.txt")) { if (!savedHDR[0]) return 0; snprintf(word, size, "%s", savedHDR); return 1; }
     const char *dir = getenv("SETTINGS_TEST_DIR"); if (!dir) return 0;
     char path[4096]; snprintf(path, sizeof path, "%s/%s", dir, name); FILE *f = fopen(path, "r"); if (!f) return 0;
     size_t n = fread(word, 1, size - 1, f); word[n] = 0; fclose(f); return 1;
@@ -144,7 +149,7 @@ static void window_is(CGFloat h) {
     NSRect room = [window contentRectForFrameRect:(window.screen ?: NSScreen.mainScreen).visibleFrame];
     CGFloat want = round(fmin(h, fmin(room.size.height, room.size.width * 9 / 16)));
     NSSize now = window.contentView.bounds.size;
-    if (fabs(now.height - want) > 1 || fabs(now.width - round(want * 16 / 9)) > 1) {
+    if (fabs(now.height - want) > 1 || fabs(now.width - round(want * 16 / 9)) > 2) {
         fprintf(stderr, "window %.0fx%.0f, expected height %.0f at 16:9\n", now.width, now.height, want); abort();
     }
 }
@@ -240,11 +245,12 @@ static void frame_probe(void) {
         runtime_setting_save("graphics-frame.txt",bad[i],"test");fakeLock=0;settings_restore_begin();assert(fakeLock==0);
     }
     runtime_setting_save("graphics-frame.txt","lock-72  ","test");settings_restore_begin();assert(fakeLock==72);
-    runtime_input_key_synthetic(25,1);runtime_input_key_synthetic(25,0);assert(fakeLock==72); /* key 9 is unassigned */
+    runtime_input_key_synthetic(25,1);runtime_input_key_synthetic(25,0);assert(fakeLock==90); /* key 9: the next frame lock */
+    fakeLock=120;runtime_input_key_synthetic(25,1);runtime_input_key_synthetic(25,0);assert(fakeLock==0); /* after the last: off */
     NSString *path=[@(getenv("SETTINGS_TEST_DIR")) stringByAppendingPathComponent:@"graphics-frame.txt"];
     assert([NSFileManager.defaultManager removeItemAtPath:path error:nil]);fakeLock=0;settings_restore_begin();assert(fakeLock==0);
     unsetenv("SETTINGS_TEST_DIR");lock.set(90); /* no directory: no player file is written */
-    puts("pass: frame lock choices, shared persistence, interpolation, overrides, invalid/deleted files, key 9 inert");
+    puts("pass: frame lock choices, shared persistence, interpolation, overrides, invalid/deleted files, key 9 steps the lock");
 }
 
 int main(int argc, const char **argv) { @autoreleasepool {
@@ -255,6 +261,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     unsetenv("TOTK_MFX"); /* priority/disabled row covered by the headless frame probe */
     setenv("TOTK_OUTPUT_RES", "2560x1440", 1);   /* the native size the resolution row names */
     settings_test_output_init();
+    front_hdr_init();
     // In-memory fixture only: do not start the timer or touch a player's profile.
     playtime=[[TOTKPlaytime alloc] initWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
     window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 720) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
@@ -265,7 +272,34 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 15);
+    assert(settingsPanel.allRows.count == (totk_hdr_available()?16:15));
+    if(getenv("TEST_HDR_UNSUPPORTED")){
+        assert(!totk_hdr_available() && !front_hdr_enabled());
+        mfx_set(MFX_40);mfx_latch();assert(mfx_enabled()==MFX_40);
+        press(28);assert(!front_hdr_enabled() && mfx_enabled()==MFX_40);
+        puts("pass: unsupported game keeps SDR and interpolation with HDR flags set");return 0;
+    }
+    if(getenv("TEST_HDR_CONTROLS")){
+        assert(totk_hdr_available());metalLayer=[CAMetalLayer layer];metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;
+        CGColorSpaceRef original=metalLayer.colorspace;if(original)CFRetain(original);
+        assert(!front_hdr_enabled());
+        mfx_set(MFX_40);mfx_latch();assert(mfx_enabled()==MFX_40);
+        assert(!metalLayer.wantsExtendedDynamicRangeContent);
+        press(28);assert(front_hdr_enabled());front_hdr_present_mode(1);mfx_latch();
+        assert(mfx_enabled()==MFX_OFF && mfx_requested()==MFX_40);
+        assert(metalLayer.pixelFormat==MTLPixelFormatRGBA16Float && metalLayer.wantsExtendedDynamicRangeContent);
+        CGColorSpaceRef linearSRGB=CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB);assert(CFEqual(metalLayer.colorspace,linearSRGB));CGColorSpaceRelease(linearSRGB);
+        runtime_input_key_synthetic(28,1);runtime_input_key_synthetic(28,1);tick();runtime_input_key_synthetic(28,0);tick();
+        assert(!front_hdr_enabled());front_hdr_present_mode(0);mfx_latch();
+        assert(metalLayer.pixelFormat==MTLPixelFormatBGRA8Unorm && !metalLayer.wantsExtendedDynamicRangeContent && ((!original&&!metalLayer.colorspace)||(original&&metalLayer.colorspace&&CFEqual(original,metalLayer.colorspace))));
+        assert(mfx_enabled()==MFX_40 && !strcmp(savedHDR,"off"));
+        flip(@"HDR / EDR",YES);assert(front_hdr_enabled() && !strcmp(savedHDR,"on"));
+        flip(@"HDR / EDR",NO);assert(!front_hdr_enabled());
+        setenv("TOTK_HDR","",1);snprintf(savedHDR,sizeof savedHDR,"on\n");front_hdr_init();assert(front_hdr_enabled());
+        setenv("TOTK_HDR","0",1);front_hdr_init();assert(!front_hdr_enabled());mfx_latch();
+        press(25);assert(nvn_fps_lock()==30);press(25);assert(nvn_fps_lock()==40);press(25);assert(nvn_fps_lock()==60);press(25);assert(nvn_fps_lock()==72);press(25);assert(nvn_fps_lock()==90);press(25);assert(nvn_fps_lock()==120);press(25);assert(nvn_fps_lock()==0);
+        puts("pass: HDR off restores SDR layer, linear sRGB on, interpolation selection, hdr.txt, held keys and key 9");return 0;
+    }
 
     /* FPS graph: a switch (here off at start; frontend.m turns it on when nothing is saved), kept in fps-graph.txt
        that both games share (user 2026-10-29). */

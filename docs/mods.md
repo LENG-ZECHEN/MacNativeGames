@@ -286,6 +286,22 @@ from them and follow their terms). Played on the Mac with 1.4.3:
    `TOTK_DRAM_8GB` reports a 6.8 GiB application pool to the game (as the emulators' 8 GB mode does); the pack's
    `TextureHeap` pool, about 3.8 GiB, becomes one zero-copy GPU buffer.
 
+   To start this way from Finder too, write `on` into `dram-8gb.txt` in the data folder (next to `controls.txt`); the
+   launcher then sets `TOTK_DRAM_8GB` at every start. An explicit `TOTK_DRAM_8GB` from the environment still wins.
+4. With a true-2K picture mode (2560x1440 output), the app's own 2K overlay replaces the same heap table and keeps the
+   retail heap sizes, and the mod's table is left out of its manifest. Build the 2K overlay on the pack's table into
+   `mods/<version>-patches-out`, from a build work folder:
+
+   ```sh
+   MODS="$HOME/Library/Application Support/MacNativeGames/TOTK/mods"
+   python3.14 scripts/make_output_res_overlay.py 2560x1440 --version v121 \
+       --heapdef "$MODS/v121/System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs" --output-root "$MODS/v121-patches-out"
+   ```
+
+   The launcher points `TOTK_ROMFS_PATCHES_OUT` at that folder when it exists. Run it again whenever the pack's heap
+   table changes. Delete the folder (or `dram-8gb.txt`) together with the mod: without the pack, a start with its heap
+   sizes wastes memory, and the pack without them runs out of it.
+
 Checked on a 24 GB M-series Mac: about 8.7 GB resident in play and the GPU near full load (the GPU is the
 bottleneck). A Mac with less memory than that is not expected to run it.
 
@@ -642,6 +658,20 @@ mod 的 `exefs/` 里可能还有这些文件，构建这样处理：
 
    `TOTK_DRAM_8GB` 向游戏报告 6.8 GiB 的应用内存池（和模拟器的 8 GB 模式一样）；材质包约 3.8 GiB 的 `TextureHeap`
    池做成一个零拷贝 GPU 缓冲。
+
+   想从访达直接这样启动，在数据目录（`controls.txt` 旁边）的 `dram-8gb.txt` 里写 `on`，启动器每次启动都会设置
+   `TOTK_DRAM_8GB`。环境变量里显式给出的 `TOTK_DRAM_8GB` 仍然优先。
+4. 用真 2K 画面（2560x1440 输出）时，App 自带的 2K 覆盖层也替换同一张堆表，用的是原版堆大小，mod 清单会把材质包的堆表排除。
+   在构建工作目录里，以材质包的堆表为基础生成 2K 覆盖层，放到 `mods/<版本>-patches-out`：
+
+   ```sh
+   MODS="$HOME/Library/Application Support/MacNativeGames/TOTK/mods"
+   python3.14 scripts/make_output_res_overlay.py 2560x1440 --version v121 \
+       --heapdef "$MODS/v121/System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs" --output-root "$MODS/v121-patches-out"
+   ```
+
+   这个目录存在时，启动器会把 `TOTK_ROMFS_PATCHES_OUT` 指向它。材质包的堆表变了要重新生成。删除 mod 时把这个目录（和
+   `dram-8gb.txt`）一起删掉：没有材质包却用它的堆大小会浪费内存，有材质包却没有这些堆大小会内存不够。
 
 在 24 GB 的 Apple 芯片 Mac 上验证：游玩时常驻内存约 8.7 GB，GPU 接近满载（瓶颈在 GPU）。内存更小的 Mac 预计跑不动。
 

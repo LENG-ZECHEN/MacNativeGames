@@ -86,6 +86,7 @@ void runtime_oe_push_message(uint32_t message){(void)message;}
 void hle_bind_system_event(void *event,int autoclear){(void)event;(void)autoclear;}
 void hle_signal_system_event(void *event){(void)event;}
 uint64_t dm_nvn_frame_count(void){return 0;}
+uint64_t mtl_guard_hits(void){return 0;}   /* nvn_mtl.m: fault-guard catches this run (runtime/frontend.m front_guard_notice) */
 void fps_overlay_set_hud_mode(int mode){(void)mode;}
 int hud_compact(void){return 0;}
 int hud_snapshot(int line,char *out,size_t n,int *highlight){(void)line;(void)out;(void)n;(void)highlight;return 0;}

@@ -4,6 +4,9 @@
 //   ~/Library/Logs/MacNativeGames/totk.log             this run, only with the debug log on (totk.previous.log: the one before; botw.log for Breath of the Wild)
 // If the game is already running, the launcher only brings it to the front.
 #import <AppKit/AppKit.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/wait.h>
 #import <GameController/GameController.h>
 #include <IOKit/hid/IOHIDManager.h>
 #include <IOKit/hid/IOHIDUsageTables.h>
@@ -13,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/file.h>
 #include <sys/proc.h>
 #include <unistd.h>
@@ -22,6 +26,51 @@
 #include "include/totk_ui_lang.h"
 #include "totk_shader_contrib.h"   // the shared shader list contribution and its reminder
 #include "contrib_submit.h"        // its "Submit automatically" (gh), shared with the settings panel
+
+#include "kept_log.h"
+/* Whether the run that wrote this log ended in a crash: the markers the game writes on its way out (runtime/loader.c:
+   the fault handler's "[totk] signal=", abort_report, runtime_fail). A short reason, nil for a run that did not. */
+static NSString *log_crash_reason(NSString *log) {
+    NSData *d = [NSData dataWithContentsOfFile:log options:NSDataReadingMappedIfSafe error:nil];
+    if (!d.length) return nil;
+    NSRange all = NSMakeRange(0, d.length);
+    if ([d rangeOfData:[@"\n[launcher] crash noticed" dataUsingEncoding:NSUTF8StringEncoding] options:NSDataSearchBackwards range:all].location != NSNotFound)
+        return nil;   // told at an earlier start (one whose save picker was cancelled, so the log was not rotated)
+    NSRange sig = [d rangeOfData:[@"\n[totk] signal=0x" dataUsingEncoding:NSUTF8StringEncoding] options:NSDataSearchBackwards range:all];
+    if (sig.location != NSNotFound && NSMaxRange(sig) + 16 <= d.length) {
+        char hex[17] = {0}; memcpy(hex, (const char *)d.bytes + NSMaxRange(sig), 16);
+        int num = (int)strtol(hex, NULL, 16);
+        const char *name = num == SIGBUS ? "SIGBUS" : num == SIGSEGV ? "SIGSEGV" : num == SIGILL ? "SIGILL" : num == SIGTRAP ? "SIGTRAP" : "";
+        return [NSString stringWithFormat:@"程序崩溃（信号 %d %s）", num, name];
+    }
+    if ([d rangeOfData:[@"[totk] host abort" dataUsingEncoding:NSUTF8StringEncoding] options:NSDataSearchBackwards range:all].location != NSNotFound)
+        return @"程序中止（abort）";
+    if ([d rangeOfData:[@"\n[totk] FAIL: " dataUsingEncoding:NSUTF8StringEncoding] options:NSDataSearchBackwards range:all].location != NSNotFound)
+        return @"程序报错退出";
+    return nil;
+}
+/* At start, for the player (TOTK_SLOT_OWNER user): when the previous run's log shows a crash, keep a copy of it
+   (kept_log.h) before this run rewrites the log, and say so. Agents' test games are left alone. */
+static void crash_notice(NSString *log) {
+    const char *owner = getenv("TOTK_SLOT_OWNER");
+    if (owner && strcmp(owner, "user")) return;
+    NSString *why = log_crash_reason(log);
+    if (!why) return;
+    NSDate *ended = [NSFileManager.defaultManager attributesOfItemAtPath:log error:nil].fileModificationDate;
+    NSString *kept = kept_log_save(log, @"闪退", ended);
+    FILE *lf = fopen(log.fileSystemRepresentation, "a");   // said once: a cancelled save picker leaves this log in place
+    if (lf) { fprintf(lf, "\n[launcher] crash noticed (%s)\n", why.UTF8String); fclose(lf); }
+    NSDateFormatter *f = [NSDateFormatter new]; f.dateFormat = @"M月d日 HH:mm";
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"上次游戏闪退了";
+    alert.informativeText = [NSString stringWithFormat:@"%@，时间 %@。%@", why, ended ? [f stringFromDate:ended] : @"未知",
+                             kept ? [NSString stringWithFormat:@"\n\n那次的日志已另存为：\n%@", kept] : @"\n\n日志没能另存。"];
+    [alert addButtonWithTitle:@"继续开游戏"];
+    if (kept) [alert addButtonWithTitle:@"在访达中显示"];
+    [NSApplication sharedApplication]; [NSApp activateIgnoringOtherApps:YES];
+    if ([alert runModal] == NSAlertSecondButtonReturn && kept)
+        [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:kept]]];
+}
 
 static void show_error(NSString *detail) {
     NSAlert *alert = [NSAlert new];
@@ -151,6 +200,62 @@ static NSString *contrib_file(NSString *data) {
     return mine;
 }
 
+/* A player's own step before every start (for example syncing saves from another device): an executable file
+   before-start in the data folder runs with the chosen save folder as its argument, and the game waits for it. Exit
+   status 0 starts the game, any other status ends this start without an alert (the hook tells the player itself).
+   A start that names TOTK_PROFILE_DIR (test tools) skips it. */
+static int run_before_start(NSString *data, NSString *profile) {
+    NSString *hook = [data stringByAppendingPathComponent:@"before-start"];
+    if (getenv("TOTK_PROFILE_DIR") && *getenv("TOTK_PROFILE_DIR")) return 1;
+    if (access(hook.fileSystemRepresentation, X_OK) != 0) return 1;
+    char *args[] = {(char *)hook.fileSystemRepresentation, (char *)profile.fileSystemRepresentation, NULL};
+    extern char **environ;
+    pid_t pid; int status = 0;
+    if (posix_spawn(&pid, args[0], NULL, NULL, args, environ) != 0) { fprintf(stderr, "[launcher] before-start: cannot run %s\n", args[0]); return 1; }
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    int ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    fprintf(stderr, "[launcher] before-start %s for %s\n", ok ? "done" : "ended this start", args[1]);
+    return ok;
+}
+
+/* Save picker: saves.txt in the data folder lists the player's saves, one per line as "<name> = <folder>" (a folder
+   relative to the data folder or absolute, ~ allowed; # starts a comment). With two or more, every start asks which one
+   to play; the first is the default (Return). Without the file, or with one entry, the game starts on the default
+   profile folder as before. Cancel (Esc) quits. Sets *name to the picked name; returns nil to keep the default and
+   @"" when cancelled. A start that names TOTK_PROFILE_DIR (test tools, open --env) is not asked. */
+static NSString *pick_profile(NSString *data, NSString **name) {
+    NSString *text = [NSString stringWithContentsOfFile:[data stringByAppendingPathComponent:@"saves.txt"] encoding:NSUTF8StringEncoding error:nil];
+    NSMutableArray<NSString *> *names = [NSMutableArray array], *folders = [NSMutableArray array];
+    for (NSString *raw in [text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        NSString *line = [raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        NSRange eq = [line rangeOfString:@"="];
+        if (!line.length || [line hasPrefix:@"#"] || eq.location == NSNotFound) continue;
+        NSString *n = [[line substringToIndex:eq.location] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        NSString *f = [[[line substringFromIndex:eq.location + 1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet] stringByExpandingTildeInPath];
+        if (!n.length || !f.length) continue;
+        if (![f isAbsolutePath]) f = [data stringByAppendingPathComponent:f];
+        [names addObject:n]; [folders addObject:f];
+    }
+    if (names.count < 2) return nil;
+    [NSApplication sharedApplication]; [NSApp activateIgnoringOtherApps:YES];
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"选择存档 / Choose a save";
+    alert.informativeText = @"Return 打开第一个，Esc 取消。存档列表在 saves.txt。\nReturn opens the first one, Esc cancels. The list is in saves.txt.";
+    for (NSString *n in names) [alert addButtonWithTitle:n];
+    [alert addButtonWithTitle:@"取消 / Cancel"].keyEquivalent = @"\033";
+    /* With a before-start step (run_before_start) and its label in before-start.txt, a checkbox (on by default) lets the
+       player run it or skip it for this start; the step reads TOTK_BEFORE_START=1 / 0. */
+    NSString *label = [[NSString stringWithContentsOfFile:[data stringByAppendingPathComponent:@"before-start.txt"] encoding:NSUTF8StringEncoding error:nil]
+                       stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    BOOL step = label.length && access([data stringByAppendingPathComponent:@"before-start"].fileSystemRepresentation, X_OK) == 0;
+    if (step) { alert.showsSuppressionButton = YES; alert.suppressionButton.title = label; alert.suppressionButton.state = NSControlStateValueOn; }
+    NSInteger i = [alert runModal] - NSAlertFirstButtonReturn;
+    if (step) setenv("TOTK_BEFORE_START", alert.suppressionButton.state == NSControlStateValueOn ? "1" : "0", 1);
+    if (i < 0 || i >= (NSInteger)names.count) return @"";
+    *name = names[i];
+    return folders[i];
+}
+
 static BOOL make_dir(NSString *path) {
     return [NSFileManager.defaultManager createDirectoryAtPath:path withIntermediateDirectories:YES attributes:nil error:nil];
 }
@@ -244,10 +349,26 @@ int main(int argc, char **argv) {
             [[NSRunningApplication runningApplicationWithProcessIdentifier:running] activateWithOptions:NSApplicationActivateAllWindows];
             return 0;
         }
+        crash_notice([logs stringByAppendingPathComponent:@GAME_LOG ".log"]);
+        NSString *saveName = getenv("TOTK_PROFILE_DIR") && *getenv("TOTK_PROFILE_DIR") ? @"TOTK_PROFILE_DIR" : @"default";
+        NSString *defaultProfile = [data stringByAppendingPathComponent:@"profile"];
+        if ([saveName isEqualToString:@"default"]) {   /* saves.txt with two or more saves: ask which one */
+            NSString *picked = pick_profile(data, &saveName);
+            if (picked && !picked.length) return 0;
+            if (picked) {
+                profile = picked;
+                if (!make_dir(profile)) { show_error([NSString stringWithFormat:@"Cannot create %@.", profile]); return 1; }
+            }
+        }
+        if (!run_before_start(data, profile)) return 0;
 #if defined(TOTK_GAME_V112) || defined(TOTK_GAME_V121) || defined(TOTK_GAME_V143)
+        /* The upgrade backup is for the player's own save in the default folder. Another save picked in saves.txt is
+           a copy the player made (a 100% save, a second playthrough), so it gets no -before-<version> copy of its own. */
         NSString *backup = [profile stringByAppendingFormat:@"-before-%s", TOTK_GAME_VERSION];
         NSFileManager *fm = NSFileManager.defaultManager;
-        if (![fm fileExistsAtPath:backup]) {
+        BOOL pickedOther = ![saveName isEqualToString:@"default"] && ![saveName isEqualToString:@"TOTK_PROFILE_DIR"] &&
+                           ![profile.stringByStandardizingPath isEqualToString:defaultProfile.stringByStandardizingPath];
+        if (!pickedOther && ![fm fileExistsAtPath:backup]) {
             NSString *temporary = [backup stringByAppendingFormat:@".copy-%d", getpid()];
             NSError *error = nil;
             if (![fm copyItemAtPath:profile toPath:temporary error:&error] ||
@@ -315,6 +436,17 @@ int main(int argc, char **argv) {
             !controller_connected())
             mods = keyboardMods;
         setenv("TOTK_ROMFS_MODS", mods.fileSystemRepresentation, 0);
+        /* A large texture pack (docs/mods.md, 8 GB mode) needs two more settings at every start, kept beside the mod:
+           dram-8gb.txt saying "on" sets TOTK_DRAM_8GB, and mods/<version>-patches-out, the 2K HeapDef overlay rebuilt on
+           the pack's heap table (make_output_res_overlay.py --heapdef ... --output-root), replaces the app's own overlay
+           (TOTK_ROMFS_PATCHES_OUT). The environment still wins over both. */
+        NSString *dram = [NSString stringWithContentsOfFile:[data stringByAppendingPathComponent:@"dram-8gb.txt"] encoding:NSUTF8StringEncoding error:nil];
+        if ([[dram stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] isEqualToString:@"on"])
+            setenv("TOTK_DRAM_8GB", "1", 0);
+        NSString *patchesOut = [data stringByAppendingPathComponent:@"mods/" TOTK_GAME_DIR "-patches-out"];
+        BOOL isDir = NO;
+        if ([NSFileManager.defaultManager fileExistsAtPath:patchesOut isDirectory:&isDir] && isDir)
+            setenv("TOTK_ROMFS_PATCHES_OUT", patchesOut.fileSystemRepresentation, 0);
         /* The game's language (runtime/services.c): the app's first preferred language, which also follows a per-app
            language (defaults write org.macnativegames.totk AppleLanguages -array pt-BR). TOTK_LANG still overrides it. */
         NSString *preferred = NSLocale.preferredLanguages.firstObject;
@@ -352,6 +484,14 @@ int main(int argc, char **argv) {
             dup2(fileno(lf), STDOUT_FILENO);
             dup2(fileno(lf), STDERR_FILENO);
             fclose(lf);
+        }
+        /* The first line of every log names the save folder, so a log from the default save and one from a test or
+           second save (open --env TOTK_PROFILE_DIR=...) can be told apart; both write this same file. */
+        {
+            char when[32] = "";
+            time_t now = time(NULL);
+            strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", localtime(&now));
+            fprintf(stderr, "[launcher] %s save folder: %s (%s)\n", when, profile.fileSystemRepresentation, saveName.UTF8String);
         }
         char *const arguments[] = {(char *)binary.fileSystemRepresentation, "rewritten/" TOTK_GAME_DIR, "boot", NULL};
         execv(arguments[0], arguments);

@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdatomic.h>
 #include <sys/stat.h>
+#include "../third_party/d2r_gfx/gfx/nvn/include/totk_fps_limit.h"   /* key 9 steps through the frame-lock choices */
 typedef struct{int64_t sampling;uint64_t buttons;int32_t lx,ly,rx,ry;uint32_t attributes,pad;} NpadState;
 _Static_assert(sizeof(NpadState)==40,"Npad full-key ABI");
 static pthread_mutex_t inputLock=PTHREAD_MUTEX_INITIALIZER;
@@ -65,14 +66,28 @@ static void user_input(const char *what){
 }
 /* Keys from the window are the user's (their layout); scripted and auto-load presses use the synthetic entry (the fixed
    layout above). Key 1 (Mac key code 18) opens and closes the settings panel (frontend.m) from either; held-key repeats do
-   not toggle it. Keys 2-7 are no shortcuts any more (user 2026-10-25: the panel replaces them). */
-enum { KEY_SETTINGS = KEYMAP_SETTINGS_KEY };
+   not toggle it. Keys 2-7 are no shortcuts any more (user 2026-10-25: the panel replaces them). Keys 8 and 9 (Mac only)
+   switch HDR and step the frame lock, unless the player's layout binds that key to a game action. */
+enum { KEY_SETTINGS = KEYMAP_SETTINGS_KEY, KEY_HDR = 28, KEY_FRAME_LOCK = 25 };
+static void hotkey_press(unsigned code,int bound){
+ if(code==KEY_SETTINGS){runtime_settings_toggle();return;}
+#if TARGET_OS_OSX
+ if(bound)return;
+ if(code==KEY_HDR)runtime_front_hdr_toggle();
+ if(code==KEY_FRAME_LOCK){extern int nvn_fps_lock(void);extern void nvn_fps_lock_set(int fps);extern void dm_gfx_set_flag(const char *,int);
+  /* the next of the shared frame-lock choices (off, 30, 40, 60, 72, 90, 120), then off again */
+  int old=nvn_fps_lock(),next=0;for(size_t i=0;i+1<TOTK_FPS_LIMIT_COUNT;i++)if(totk_fps_limits[i]==old)next=totk_fps_limits[i+1];
+  nvn_fps_lock_set(next);if(next)dm_gfx_set_flag("mfx_interp",0);}
+#else
+ (void)bound;
+#endif
+}
 void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;held_buttons_locked();pthread_mutex_unlock(&inputLock);
- if(press&&code==KEY_SETTINGS)runtime_settings_toggle();}
+ if(press)hotkey_press(code,0);}
 void runtime_input_key(unsigned code,int down){
  if(code>=128)return;if(down)user_input("keyboard");
- pthread_mutex_lock(&inputLock);int press=down&&!held[code];held[code]=(unsigned char)!!down;held_changed_locked();pthread_mutex_unlock(&inputLock);
- if(press&&code==KEY_SETTINGS)runtime_settings_toggle();
+ pthread_mutex_lock(&inputLock);int press=down&&!held[code];held[code]=(unsigned char)!!down;held_changed_locked();int bound=keymap_action_of(&keyMap,(int)code,NULL)>=0;pthread_mutex_unlock(&inputLock);
+ if(press)hotkey_press(code,bound);
 }
 /* A mouse button in mouse mode (runtime/gamepad.m: 0 left, 1 right, 2 middle, 3 and 4 the side buttons). */
 void runtime_input_mouse(int button,int down){
@@ -195,6 +210,15 @@ extern void runtime_front_request_close(void);
 /* "mscan ...": memory scan and write watch (runtime/mem_scan.h, in services.c); this default answers in the probes that
    link input.c alone, which have no game memory. */
 __attribute__((weak)) int runtime_mem_scan_command(const char *line) { (void)line; return 0; }
+/* Keys 8 (HDR) and 9 (frame lock) and the input-file "hdr" command reach the frontend and the graphics layer; these
+   defaults answer in the probes that link input.c alone (input-probe, autoload-probe). A probe that includes frontend.m
+   in the same file (settings-panel probe) has the real ones and its own frame lock. */
+#ifndef TOTK_FRONTEND_M
+__attribute__((weak)) void runtime_front_hdr_toggle(void) {}
+__attribute__((weak)) void runtime_front_hdr_set(int enabled) { (void)enabled; }
+__attribute__((weak)) int nvn_fps_lock(void) { return 0; }
+__attribute__((weak)) void nvn_fps_lock_set(int fps) { (void)fps; }
+#endif
 static void *input_file(void *arg) {
     FILE *f = fopen((const char *)arg, "r"); if (!f) runtime_fail("cannot open TOTK_INPUT_FILE");
     char line[1200];
@@ -228,6 +252,10 @@ static void *input_file(void *arg) {
             extern void dm_gfx_anomdump(void); dm_gfx_anomdump();
         } else if (sscanf(line, "querylog %u %n", &code, &used) == 1 && used && !line[used] && code > 0 && code <= 600) {
             extern void dm_gfx_querylog_next(long n); dm_gfx_querylog_next((long)code);   /* occlusion query results of the next n frames */
+#if TARGET_OS_OSX
+        } else if (sscanf(line,"edr %u %n",&code,&used)==1 && used && !line[used] && code<=1) {
+            extern void runtime_front_hdr_set(int enabled);runtime_front_hdr_set((int)code);
+#endif
         } else if (!strncmp(line, "flag ", 5)) {
             /* "flag <name> <0|1>": switch a graphics behaviour while the game runs (A/B without restarting); rumble / gyro mute and unmute those */
             char name[64]; int v; if (sscanf(line + 5, "%63s %d", name, &v) != 2) runtime_fail("diagnostic flag needs <name> <0|1>");
