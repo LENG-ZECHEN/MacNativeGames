@@ -486,6 +486,10 @@ static void apply_settings(void) {
     setenv("TOTK_ROMFS_PATCHES",[res stringByAppendingPathComponent:@"romfs-patches"].fileSystemRepresentation,1);
     setenv("TOTK_ROMFS_PATCHES_OUT",[res stringByAppendingPathComponent:@"romfs-patches-out"].fileSystemRepresentation,1);
     setenv("TOTK_SHARED_FONTS",[res stringByAppendingPathComponent:@"shared-fonts"].fileSystemRepresentation,1);
+    /* Player mods, as on the Mac (app/launcher.m): Documents/mods/<version>/manifest.tsv when present (runtime/romfs.c).
+       Removing the folder (or its manifest) plays without them; devicectl's TOTK_ROMFS_MODS=0 still wins for a test. */
+    NSString *mods = [docs stringByAppendingPathComponent:@"mods/" TOTK_GAME_DIR];
+    if ([fm fileExistsAtPath:[mods stringByAppendingPathComponent:@"manifest.tsv"]]) setenv("TOTK_ROMFS_MODS",mods.fileSystemRepresentation,0);
     NSString *aoc = [res stringByAppendingPathComponent:@"aoc"];   // Breath of the Wild's add-on content packs (build_ipa.py; runtime/aoc_romfs.c)
     if ([fm fileExistsAtPath:aoc]) setenv("TOTK_AOC",aoc.fileSystemRepresentation,1);
     setenv("TOTK_SHADER_SEED_DIR",seedDir.fileSystemRepresentation,1);
