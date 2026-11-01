@@ -422,6 +422,17 @@ static HIDPadState hidPad;
 static void hid_pad_start(void) {}
 #endif
 
+/* ---- A Switch 2 Pro Controller over Bluetooth LE (runtime/ns2pad_bridge.m, third_party/ns2pad) ----
+   macOS and iOS do not hand this controller to GameController; ns2pad reads it in our own process. The bridge turns its
+   buttons into the same physical bits gamepad_buttons() produces (face buttons by position: B bottom, A right, Y left,
+   X top), so the layout file and the settings panel treat it like any other controller. */
+static HIDPadState ns2Pad;   /* main thread */
+void runtime_gamepad_ns2pad(int present, uint64_t buttons, float lx, float ly, float rx, float ry) {   /* any thread */
+    HIDPadState next = {0};
+    if (present) next = (HIDPadState){1, buttons, stick_axis(lx), stick_axis(ly), stick_axis(rx), stick_axis(ry)};
+    dispatch_async(dispatch_get_main_queue(), ^{ ns2Pad = next; refresh_gamepads(); });
+}
+
 /* ---- Mouse mode (Mac, the settings panel; in mouse.txt) ----
    The window (runtime/frontend.m) holds the pointer while mouse mode is on and the window has the keyboard, and sends
    the mouse's buttons and movement here. Buttons go to the keyboard and mouse layout (runtime/input.c, keyboard_map.h:
@@ -595,6 +606,23 @@ void runtime_mouse_release(void) {   /* main thread: the window let the pointer 
     }
 }
 
+/* While any controller is connected, nothing looks for another one: GameController's wireless discovery and ns2pad's
+   Bluetooth LE scan for a Switch 2 Pro Controller both stop, and start again once the last controller is gone (user
+   2026-10-31: "连到其中的一个以后，就不要管另外一个"). A controller the system has paired (Joy-Con, Pro Controller,
+   DualSense) still reconnects by itself; only a Switch 2 Pro Controller waits until the others are disconnected. */
+/* ns2pad_bridge.m has the real one; the probes that link this file without it get this default */
+__attribute__((weak)) void runtime_ns2pad_scan(int on) { (void)on; }
+static void controller_search(int connected) {   /* main thread */
+    static int searching = 1;   /* both start searching (runtime_gamepad_start, runtime_ns2pad_start) */
+    int want = !connected;
+    if (want == searching) return;
+    searching = want;
+    runtime_ns2pad_scan(want);
+    if (want) [GCController startWirelessControllerDiscoveryWithCompletionHandler:nil];
+    else [GCController stopWirelessControllerDiscovery];
+    fprintf(stderr, "[totk-input] looking for controllers: %s\n", want ? "on (none connected)" : "off (a controller is connected)");
+}
+
 static void refresh_gamepads(void) {
     RuntimeGamepadState next = {0};
     uint64_t physical = (uint64_t)mouseButtons << CONTROLLER_MOUSE_FIRST;
@@ -638,6 +666,15 @@ static void refresh_gamepads(void) {
         next.rx = stronger_axis(next.rx, hidPad.rx);
         next.ry = stronger_axis(next.ry, hidPad.ry);
     }
+    if (ns2Pad.present) {
+        next.connected = 1;
+        physical |= ns2Pad.buttons;
+        next.lx = stronger_axis(next.lx, ns2Pad.lx);
+        next.ly = stronger_axis(next.ly, ns2Pad.ly);
+        next.rx = stronger_axis(next.rx, ns2Pad.rx);
+        next.ry = stronger_axis(next.ry, ns2Pad.ry);
+    }
+    controller_search(next.connected);
     /* Modes work on the physical buttons, not on the mapped ones: two physical buttons may share a Switch button
        (X and L3 both running), and a mapped edge would be lost while the other one is held. */
     uint64_t now = runtime_now_ns(), edges = physical & ~physicalPrev, synthetic = 0, suppressed = 0, trigger = settings_trigger();
@@ -727,6 +764,7 @@ int runtime_gamepad_type(int *detected) {
 #if TARGET_OS_OSX
     if (found < 0 && hidPad.present) found = GAMEPAD_TYPE_SWITCH;   /* the generic HID pads are Switch-style */
 #endif
+    if (found < 0 && ns2Pad.present) found = GAMEPAD_TYPE_SWITCH;
     if (detected) *detected = found;
     return atomic_load(&controllerType);
 }

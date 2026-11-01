@@ -20,12 +20,15 @@ targets:
           - game_patches_botw.c
       - path: ../third_party/d2r_gfx/gfx/nvn
       - path: ../third_party/d2r_gfx/gfx/tex
+      - path: ../third_party/ns2pad/core/ns2_core.c          # a Switch 2 Pro Controller over Bluetooth LE
+      - path: ../third_party/ns2pad/transport/apple/ns2pad_apple.m
       - path: Gen/embed.S
       - path: ../runtime/loader.c
         compilerFlags: "-Dmain=totk_host_main"
     dependencies:
       - sdk: CoreHaptics.framework   # the iPhone's Taptic Engine while the touch controls are used
       - sdk: CoreMotion.framework    # the iPhone's own gyro while the touch controls are used
+      - sdk: CoreBluetooth.framework # a Switch 2 Pro Controller (runtime/ns2pad_bridge.m)
     info:
       path: Sources/Info.plist
       properties:
@@ -46,6 +49,7 @@ targets:
         UIApplicationSupportsIndirectInputEvents: true
         GCSupportsControllerUserInteraction: true
         NSMotionUsageDescription: Tilt the iPhone to aim while you play with the on-screen controls.
+        NSBluetoothAlwaysUsageDescription: Connect a Nintendo Switch 2 Pro Controller over Bluetooth.
         GCSupportedGameControllers:
           - ProfileName: ExtendedGamepad
         CADisableMinimumFrameDurationOnPhone: true
@@ -71,6 +75,8 @@ targets:
         - $(inherited)
         - ../third_party/d2r_gfx/gfx/nvn
         - ../third_party/d2r_gfx/gfx/nvn/include
+        - ../third_party/ns2pad/include
+        - ../third_party/ns2pad/core
         - Gen
         - Gen/deps/include
       OTHER_CFLAGS: $(inherited) -mcpu=apple-a15 -I../runtime -I../third_party/d2r_gfx/gfx/nvn -I../third_party/d2r_gfx/gfx/nvn/include -IGen -I../build

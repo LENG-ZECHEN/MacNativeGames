@@ -158,6 +158,7 @@ extern void totk_phone_haptics_start(void);
 void runtime_front_run(void(*callback)(void)){
  if(!metalLayer)runtime_fail("iOS view not attached before boot");
  runtime_gamepad_start();
+ runtime_ns2pad_start();   /* a Switch 2 Pro Controller over Bluetooth LE (ns2pad_bridge.m) */
 #if TARGET_OS_IOS
  /* After the controller scan, on the main queue: the phone's sensor is only used when no controller is attached. */
  dispatch_async(dispatch_get_main_queue(), ^{ totk_phone_motion_start(); totk_phone_haptics_start(); });

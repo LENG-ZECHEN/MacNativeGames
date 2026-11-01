@@ -64,6 +64,12 @@ static _Atomic float gain = 1.0f;   /* the rumble queue reads it; the settings p
 /* Idle rumble ticks once a second instead of 100 times: a connected controller should not keep the CPU waking while
    the game sends nothing. A new value switches back to 100 Hz. */
 static _Atomic int rumbleSlow;
+/* A Switch 2 Pro Controller over Bluetooth LE (runtime/ns2pad_bridge.m): while it is connected it alone feeds the motion,
+   and the game's rumble goes to it as two motor strengths (the stronger side of each band, times the strength setting).
+   The motor frequencies are left to the controller: which of its frequency codes means which Hz is not measured yet. */
+static _Atomic int ns2Motion;
+static void (*_Atomic ns2Rumble)(float low, float high);   /* rumbleQueue reads it */
+static float ns2Sent[2] = {-1, -1};                          /* rumbleQueue */
 
 void runtime_rumble_set(unsigned side, float al, float fl, float ah, float fh) {
     if (side > 1) return;
@@ -377,6 +383,21 @@ static void rumble_tick(void) {   /* rumbleQueue, every 10 ms */
         if (!playing[side] || now - playerSince[side] > RUMBLE_RENEW_MS * 1000000ull) start_player(side, intensity, sharpness, now);
         else if (fabsf(intensity - sentIntensity[side]) > 0.01f || fabsf(sharpness - sentSharpness[side]) > 0.02f) send_params(players[side], side, intensity, sharpness);
     }
+    void (*ns2)(float, float) = atomic_load(&ns2Rumble);
+    if (ns2) {
+        float band[2] = {0, 0};
+        for (int side = 0; side < 2; side++) {
+            float v[4]; uint64_t at;
+            pthread_mutex_lock(&wantLock); memcpy(v, want[side], sizeof v); at = wantAt[side]; pthread_mutex_unlock(&wantLock);
+            if (!at || now - at >= RUMBLE_STALE_MS * 1000000ull) continue;
+            if (v[0] > band[0]) band[0] = v[0];
+            if (v[2] > band[1]) band[1] = v[2];
+        }
+        for (int b = 0; b < 2; b++) { band[b] *= gain; band[b] = band[b] < 0.02f ? 0 : band[b] > 1 ? 1 : band[b]; }
+        if (fabsf(band[0] - ns2Sent[0]) > 0.01f || fabsf(band[1] - ns2Sent[1]) > 0.01f || ((!band[0] && !band[1]) && (ns2Sent[0] || ns2Sent[1]))) {
+            ns2(band[0], band[1]); ns2Sent[0] = band[0]; ns2Sent[1] = band[1];
+        }
+    }
 #if TARGET_OS_OSX
     if (rumbleHid || rumbleHidLeft) rumble_tick_hid(now);   /* a Switch Pro Controller (PR #920) or paired Joy-Con */
     if (hidRumbleDevice) hid_rumble_tick(now);     /* a HID pad from the profile table (PR #149) */
@@ -450,6 +471,7 @@ static void hid_motion_stop(void);
 static uint64_t zeroSince;          /* the controller's handler queue */
 static BOOL motionSeen, hidAsked;   /* the controller's handler queue; reset on attach */
 static void motion_sample(GCMotion *m) {   /* the controller's handler queue */
+    if (atomic_load(&ns2Motion)) return;   /* a Switch 2 Pro Controller feeds the motion: one source only */
     GCAcceleration a = m.acceleration;
     if (m.hasGravityAndUserAcceleration) { a.x = m.gravity.x + m.userAcceleration.x; a.y = m.gravity.y + m.userAcceleration.y; a.z = m.gravity.z + m.userAcceleration.z; }
     const double acc[3] = {a.x, a.y, a.z}, gyro[3] = {m.rotationRate.x, m.rotationRate.y, m.rotationRate.z};
@@ -606,7 +628,7 @@ static void hid_report(void *ctx, IOReturn result, void *sender, IOHIDReportType
         /* Right Joy-Con reverses raw Y/Z relative to Pro (SDL Switch sensor mapping). */
         const double side = hidJoyConRight ? -1 : 1;
         const double acc[3] = {side * raw[1], -raw[0], -side * raw[2]}, gyro[3] = {-side * raw[4], raw[3], side * raw[5]};
-        runtime_motion_feed(acc, gyro, now - (uint64_t)(2 - k) * step);
+        if (!atomic_load(&ns2Motion)) runtime_motion_feed(acc, gyro, now - (uint64_t)(2 - k) * step);
     }
 }
 /* product: 0x2009 a Switch Pro Controller (motion or rumble), 0x2007 the right Joy-Con of a paired set (motion, PR #889) */
@@ -986,7 +1008,7 @@ static void hid_imu_report(void *ctx, IOReturn result, void *sender, IOHIDReport
         return;
     }
     double acc[3], gyro[3];
-    if (!hid_imu_decode(pr, id, p, len, acc, gyro)) return;
+    if (!hid_imu_decode(pr, id, p, len, acc, gyro) || atomic_load(&ns2Motion)) return;
     static mach_timebase_info_data_t tb;
     if (!tb.denom) mach_timebase_info(&tb);
     runtime_motion_feed(acc, gyro, hid_imu_time((uint64_t)((__uint128_t)stamp * tb.numer / tb.denom), runtime_now_ns(), &imuLast));   /* the report's own receive time: see hid_imu.h */
@@ -1029,6 +1051,20 @@ static BOOL hid_imu_start(GCController *c) {   /* the raw HID fallback is macOS 
     return NO;
 }
 #endif
+
+/* ---- a Switch 2 Pro Controller over Bluetooth LE (runtime/ns2pad_bridge.m) ---- */
+void runtime_feedback_ns2pad(int on, void (*rumble)(float low, float high)) {   /* any thread */
+    int gyro = runtime_gyro_enabled(), haptics = runtime_rumble_enabled();
+    atomic_store(&ns2Motion, on && gyro);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (gyro) {
+            if (on) { runtime_motion_deadzone_default(1.2); runtime_motion_live(1); }   /* a Nintendo sensor, as over HID */
+            else runtime_motion_live(motionPad != nil);   /* a GameController pad's motion takes over again */
+        }
+        if (on && haptics) rumble_start();
+        if (rumbleQueue) dispatch_async(rumbleQueue, ^{ ns2Sent[0] = ns2Sent[1] = -1; atomic_store(&ns2Rumble, on && haptics ? rumble : NULL); });
+    });
+}
 
 /* ---- controllers ---- */
 void runtime_feedback_attach(GCController *c) {   /* main queue */

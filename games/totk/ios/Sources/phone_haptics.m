@@ -177,6 +177,7 @@ static void tick(void) {   /* queue, every 10 ms */
 }
 
 static BOOL controller_connected(void) {
+    if (runtime_ns2pad_connected()) return YES;   /* a Switch 2 Pro Controller over Bluetooth LE (runtime/ns2pad_bridge.m) */
     for (GCController *controller in GCController.controllers)
         if (controller.extendedGamepad) return YES;
     return NO;
@@ -211,6 +212,8 @@ void totk_phone_haptics_start(void) {
     dispatch_resume(timer);
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
     [center addObserverForName:GCControllerDidConnectNotification object:nil queue:NSOperationQueue.mainQueue
+                    usingBlock:^(NSNotification *note) { (void)note; update_active(); }];
+    [center addObserverForName:RUNTIME_NS2PAD_CHANGED object:nil queue:NSOperationQueue.mainQueue
                     usingBlock:^(NSNotification *note) { (void)note; update_active(); }];
     [center addObserverForName:GCControllerDidDisconnectNotification object:nil queue:NSOperationQueue.mainQueue
                     usingBlock:^(NSNotification *note) { (void)note; update_active(); }];

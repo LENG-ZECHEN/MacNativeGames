@@ -272,7 +272,8 @@ def probe_runtime(tmp, version, logs):
 
 def record_commit(tmp):
     """The commit this runtime is built from, in the app's Info.plist: MNGSourceCommit (build_app.source_commit) for
-    the HUD, which would otherwise keep showing the commit of the app's first build."""
+    the HUD, which would otherwise keep showing the commit of the app's first build; and the Bluetooth usage line the
+    runtime needs."""
     path = tmp / 'Contents/Info.plist'
     info = plistlib.loads(path.read_bytes())
     commit = build_app.source_commit()
@@ -280,6 +281,8 @@ def record_commit(tmp):
         info['MNGSourceCommit'] = commit
     else:
         info.pop('MNGSourceCommit', None)
+    # an app made before the Switch 2 Pro Controller support: the runtime now asks for Bluetooth (build_app.BLUETOOTH_USAGE)
+    info['NSBluetoothAlwaysUsageDescription'] = build_app.BLUETOOTH_USAGE
     path.write_bytes(plistlib.dumps(info))
 
 

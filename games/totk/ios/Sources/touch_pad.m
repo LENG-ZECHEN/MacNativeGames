@@ -39,6 +39,7 @@ static const CGFloat kFpsButtonSize = 34;
         NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
         [center addObserver:self selector:@selector(controllersChanged:) name:GCControllerDidConnectNotification object:nil];
         [center addObserver:self selector:@selector(controllersChanged:) name:GCControllerDidDisconnectNotification object:nil];
+        [center addObserver:self selector:@selector(controllersChanged:) name:RUNTIME_NS2PAD_CHANGED object:nil];
         [center addObserver:self selector:@selector(controllersChanged:) name:GCKeyboardDidConnectNotification object:nil];
         [center addObserver:self selector:@selector(controllersChanged:) name:GCKeyboardDidDisconnectNotification object:nil];
         [self controllersChanged:nil];
@@ -47,7 +48,7 @@ static const CGFloat kFpsButtonSize = 34;
 }
 
 - (void)controllersChanged:(NSNotification *)note {
-    BOOL connected = NO;
+    BOOL connected = runtime_ns2pad_connected();   /* a Switch 2 Pro Controller (runtime/ns2pad_bridge.m) */
     for (GCController *controller in GCController.controllers)
         if (controller.extendedGamepad && !([note.name isEqualToString:GCControllerDidDisconnectNotification] && controller == note.object)) connected = YES;
     /* A connect notification carries the keyboard itself; coalescedKeyboard is the one that stays. A disconnect's object

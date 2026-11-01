@@ -13,6 +13,7 @@ void runtime_input_clear(void){}
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_gamepad_start(void){}
 #endif
+void runtime_ns2pad_start(void){}   /* runtime/ns2pad_bridge.m: no Bluetooth in the probes */
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_gamepad_settings_enable(int on){(void)on;}
 #endif

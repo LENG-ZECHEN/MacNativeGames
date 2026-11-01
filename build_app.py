@@ -91,6 +91,9 @@ SPIRV_CROSS_FLAGS = ('-O3', '-DNDEBUG', '-std=c++11', '-arch', 'arm64', '-Wno-de
 # Homebrew first; then the folder of the running interpreter (the Python uv selected, or an activated virtual environment),
 # last so that a system Python's /usr/bin never shadows the Homebrew tools for the build's subprocesses.
 TOOL_PATHS = ['/opt/homebrew/bin', '/usr/local/bin', str(Path(sys.executable).parent)]
+# The Switch 2 Pro Controller (games/totk/runtime/ns2pad_bridge.m) is read over Bluetooth LE in the game's own process:
+# without this line in the app's Info.plist macOS ends the game the moment it asks for Bluetooth. update_runtime.py adds it too.
+BLUETOOTH_USAGE = 'Connect a Nintendo Switch 2 Pro Controller over Bluetooth.'
 
 
 def contrib_folder():
@@ -1543,6 +1546,7 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
                 CFBundleVersion=str(expected['version'] + 1), LSMinimumSystemVersion='26.0', NSHighResolutionCapable=True,
                 LSApplicationCategoryType='public.app-category.action-games', LSSupportsGameMode=True,
                 GCSupportsControllerUserInteraction=True,
+                NSBluetoothAlwaysUsageDescription=BLUETOOTH_USAGE,
                 CFBundleLocalizations=list(GAME_LANGUAGES) + (['pt-BR'] if version in ('v143', 'botw190') else []))
     icon = tree / 'build/AppIcon.icns'
     if icon.exists():

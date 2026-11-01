@@ -169,6 +169,12 @@ int runtime_gamepad_type_set(int type);     /* runtime/gamepad.m: the settings p
 int runtime_gamepad_type(int *detected);    /* runtime/gamepad.m, main thread: the picked type; *detected = auto's guess for the connected controller, -1 none */
 int runtime_gamepad_battery_percent(void);  /* runtime/gamepad.m, main thread: the first controller's battery as a whole percent, -1 none or unknown */
 void runtime_gamepad_hid_battery(int left, int percent);   /* runtime/gamepad.m, any thread: a Switch controller's battery read from its HID reports (left: a paired set's left Joy-Con), -1 none */
+void runtime_gamepad_ns2pad(int present, uint64_t buttons, float lx, float ly, float rx, float ry);   /* runtime/gamepad.m, any thread: a Switch 2 Pro Controller's physical buttons (controller_map.h bits) and sticks (-1..1, y up) */
+void runtime_ns2pad_start(void);   /* runtime/ns2pad_bridge.m, main thread, once: look for a Switch 2 Pro Controller over Bluetooth LE */
+void runtime_ns2pad_scan(int on);   /* runtime/ns2pad_bridge.m: look for a Switch 2 Pro Controller or stop looking */
+int runtime_ns2pad_connected(void);   /* runtime/ns2pad_bridge.m, any thread: one is in use (GameController does not list it) */
+#define RUNTIME_NS2PAD_CHANGED @"TOTKSwitch2ControllerChanged"   /* posted on the main queue when it connects or goes away */
+void runtime_feedback_ns2pad(int on, void (*rumble)(float low, float high));   /* runtime/gamepad_feedback.m, any thread: a Switch 2 Pro Controller feeds the motion (1) or went away (0); rumble gets the game's two bands, 0..1 */
 int runtime_gamepad_battery_left_percent(void);  /* runtime/gamepad.m: a paired Joy-Con set's left one, -1 none; the percent above is then the right one */
 int runtime_setting_word(const char *name, char *word, size_t size);   /* runtime/gamepad.m: a one-word setting file next to controls.txt; 1 read, 0 none */
 void runtime_setting_save(const char *name, const char *word, const char *what);   /* runtime/gamepad.m: saves one; what names it in a failure line */

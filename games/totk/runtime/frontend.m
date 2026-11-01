@@ -613,6 +613,7 @@ void runtime_front_run(void(*callback)(void)){
   [NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
   runtime_mouse_set_hook(front_mouse_update);
   runtime_gamepad_start();
+  runtime_ns2pad_start();   /* a Switch 2 Pro Controller over Bluetooth LE (ns2pad_bridge.m) */
   /* Default window: the docked output size, 1920x1080, scaled down (16:9 kept) when the screen's visible area is smaller. */
   /* TOTK_WINDOW_SIZE=<w>x<h> (test scripts only, e.g. the 2K output test; the desktop launcher never sets it): another starting size. */
   NSRect vis=NSScreen.mainScreen?NSScreen.mainScreen.visibleFrame:NSMakeRect(0,0,1920,1080+28);CGFloat ww=1920,wh=1080;
