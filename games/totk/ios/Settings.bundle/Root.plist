@@ -130,11 +130,13 @@
 			<key>Values</key>
 			<array>
 				<string>60</string>
+				<string>40</string>
 				<string>30</string>
 			</array>
 			<key>Titles</key>
 			<array>
 				<string>最高 60 · Up to 60</string>
+				<string>鎖 40（比 60 凉，比 30 顺）· Held at 40</string>
 				<string>鎖 30 · Held at 30</string>
 			</array>
 		</dict>
@@ -330,15 +332,17 @@
 			<key>Values</key>
 			<array>
 				<string>30</string>
+				<string>40</string>
 				<string>60</string>
 			</array>
 			<key>Titles</key>
 			<array>
 				<string>30 帧（省电，最稳）· 30 fps (coolest, steadiest)</string>
+				<string>40 帧（比 60 凉，比 30 顺）· 40 fps (cooler than 60, smoother than 30)</string>
 				<string>60 帧（推荐）· 60 fps</string>
 			</array>
 			<key>FooterText</key>
-			<string>30 最省电也最稳，长时间不变；60 推荐，发热后可能临时降到 30，冷却后自行回到 60。iOS 的显示链路固定 60 Hz，没有更高的档位可给。重启游戏后生效 · 30 is the coolest and holds steady over time; 60 is recommended — after the SoC heats up the game may drop to 30 for a while and return to 60 once it cools. The iOS display link is fixed at 60 Hz, so there is no higher rate to offer. Takes effect after relaunching</string>
+			<string>30 最省电也最稳；40 在 120 Hz 屏上每三次刷新出一帧，间隔均匀，比 60 凉；60 推荐，画面重时只少几帧、不会掉到 30 档，冷却后自行回到 60。屏幕按 120 Hz 刷新，晚了的帧早 8 毫秒显示，帧率不超过 60。重启游戏后生效 · 30 is the coolest and steadiest; 40 is every third refresh of a 120 Hz screen, evenly spaced and cooler than 60; 60 is recommended — a busy scene costs a few frames instead of dropping to 30, and it returns to 60 once it cools. The screen refreshes at 120 Hz so a late frame shows 8 ms sooner; the game draws at most 60. Takes effect after relaunching</string>
 		</dict>
 		<dict>
 			<key>Type</key>

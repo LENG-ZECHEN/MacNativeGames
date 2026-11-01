@@ -86,9 +86,24 @@ static void app_active_changed(int active){
 void runtime_front_request_close(void){fprintf(stderr,"[totk] close requested; iOS apps are closed by the user\n");}
 void runtime_front_text_test(const char *op,const char *text){(void)text;fprintf(stderr,"[totk] text entry test \"%s\" ignored: iOS has no text entry bar (the keyboard request is cancelled)\n",op?op:"");}
 
-/* The display link's rate, which paces the game (mtl_display_hz): 60 on every iPhone / iPad, also a ProMotion one, whose
-   screen reports 120 (UIScreen.maximumFramesPerSecond with CADisableMinimumFrameDurationOnPhone). */
-#define TOTK_IOS_LINK_HZ 60
+/* The display link's rate, which paces the game (mtl_display_hz): the screen's own up to 120 (a ProMotion iPhone / iPad
+   reports 120 with CADisableMinimumFrameDurationOnPhone), else 60. Since 2026-11-01 a ProMotion phone runs the link at
+   120 while the game stays at most 60 (hle_nvn.c uncapped_cap): a frame that missed 16.7 ms is shown at the next 8.3 ms
+   refresh instead of a whole 60 Hz refresh later (17 / 33 ms frames, which looked like 60 and 30 in turn), and 40 fps is
+   every third refresh (TOTK_PHONE_FPS=40). TOTK_IOS_LINK_HZ=60 keeps the old 60 Hz link. */
+static int link_hz_now(void){
+ static int hz;if(hz)return hz;
+ const char *e=getenv("TOTK_IOS_LINK_HZ");int want=e&&*e?atoi(e):120;
+#if TARGET_OS_VISION
+ int scr=60;   /* visionOS: no UIScreen; the link stays at 60 as before */
+#else
+ int scr=(int)UIScreen.mainScreen.maximumFramesPerSecond;if(scr<=0)scr=60;
+#endif
+ hz=want<60?60:want;if(hz>120)hz=120;if(hz>scr)hz=scr;
+ fprintf(stderr,"[totk] display link %d Hz (screen %d Hz, TOTK_IOS_LINK_HZ%s%s)\n",hz,scr,e?"=":" unset",e?e:"");
+ return hz;
+}
+#define TOTK_IOS_LINK_HZ link_hz_now()
 int front_display_link_hz(void){return TOTK_IOS_LINK_HZ;}
 
 @interface TOTKVsync:NSObject

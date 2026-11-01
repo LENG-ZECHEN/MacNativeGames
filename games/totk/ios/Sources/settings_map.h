@@ -28,12 +28,12 @@ typedef struct {
 
 /* mode is one of the pane's picture values; 0 when it is not (out is untouched). */
 int totk_picture_env_build(const char *mode, totk_picture_env *out);
-/* cap is "30" or "60". 0 when cap is not a pane value (out is untouched). The iOS display link is fixed at 60 Hz, so
-   there is no higher entry: the uncapped path could never show more than 60 either. */
+/* cap is "30", "40" or "60". 0 when cap is not a pane value (out is untouched). 60 is the most: the phone's uncapped
+   ceiling (hle_nvn.c uncapped_cap), also on a 120 Hz screen, where the link runs at 120 only to show a late frame sooner. */
 int totk_frame_env_build(const char *cap, totk_frame_env *out);
 /* docked: the pane's Full HD switch. Always succeeds. */
 int totk_preset_env_build(int docked, totk_preset_env *out);
-/* fps is the pane's preset row, "60" (up to the display's rate) or "30" (held). 0 for anything else. */
+/* fps is the pane's preset row: the same values and meaning as the custom cap. 0 for anything else. */
 int totk_preset_frame_env_build(const char *fps, totk_frame_env *out);
 
 const char *totk_picture_mode_default(void);
@@ -47,4 +47,4 @@ totk_key_layer totk_key_layer_of(const char *key);
 /* The in-game frame-rate button (touch_pad.m). The preset layer saves the choice under its own row; the custom layer
    keeps the cap in the pane, so the button only holds 30 until the next launch and saves nothing (NULL). */
 const char *totk_frame_button_key(int custom);
-int totk_frame_button_target(int held30);   /* 30 or the normal rate (60); the runtime only knows 30 or not-30 */
+int totk_frame_button_target(int now);   /* the next rate after now (runtime_phone_fps): 60 -> 40 -> 30 -> 60 */

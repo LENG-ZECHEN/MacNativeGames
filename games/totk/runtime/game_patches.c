@@ -848,6 +848,12 @@ void runtime_game_patches(Module *m) {
             }
         }
         fprintf(stderr, "[totk] embedded main: real-time frame step and 60 FPS patch (%zu instructions) applied at build time\n", n);
+#if defined(TOTK_GAME_V121)
+        /* The phone fills the screen: the export put the stubs in, aspect_install's iPhone part only checks them and
+           turns the ratio slot on. Without this call the 1.2.1 phone stayed at 16:9 with bars. */
+        { static const uint64_t sites[] = {0xcb4b10, 0x12521cc, 0x19b36f0, 0x1ecdf68};   /* the same sites as below */
+          aspect_install(m, "1.2.1", sites, 4, 2, (m->text_end + 15) & ~15ULL, 0, (m->file_size + 0x3fff) & ~0x3fffULL); }
+#endif
         return;
     }
     patch_pchtxt(m);   /* first: the runtime's own patches check the original words they replace */

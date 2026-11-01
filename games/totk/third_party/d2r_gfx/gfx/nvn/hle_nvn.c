@@ -2440,7 +2440,16 @@ void nvn_set_framewait(int on) {
     *(volatile uint8_t *)(uintptr_t)(g_game_sys + 0x224) = on ? 1 : 2;
     LOG("[flag] framewait = %d（写 +0x224 = %d）", on, on ? 1 : 2);
 }
-NVN(nvnWindowSetPresentInterval, void, NVNwindow *w, int v) { if (((win_t *)w)->interval != v) LOG("[nvn] 游戏设出图间隔 %d → %d", ((win_t *)w)->interval, v); ((win_t *)w)->interval = v; if (!g_game_sys) find_game_sys(); }
+/* The game raised its present interval (1 -> 2: 60 -> 30 fps) on its own, not because the player holds a rate: nvn_mtl.m's
+   GPU keep-alive runs only then on iPhone / iPad (keepalive_start). */
+static int game_hold_fps(void);
+static _Atomic int g_interval_raised;
+static int uncapped_now(void);
+static int uncapped_interval_on(void);
+int nvn_game_interval_raised(void) {   /* only while the raised interval really paces the frames: not when it is ignored */
+    return atomic_load(&g_interval_raised) && !game_hold_fps() && !(uncapped_now() && uncapped_interval_on());
+}
+NVN(nvnWindowSetPresentInterval, void, NVNwindow *w, int v) { if (((win_t *)w)->interval != v) LOG("[nvn] 游戏设出图间隔 %d → %d", ((win_t *)w)->interval, v); ((win_t *)w)->interval = v; atomic_store(&g_interval_raised, v > 1); if (!g_game_sys) find_game_sys(); }
 NVN(nvnWindowSetCrop, void, NVNwindow *w, int x, int y, int ww, int hh) {
     win_t *o = (win_t *)w; int v[4] = {x, y, ww, hh};
     if (memcmp(o->crop, v, sizeof v)) { LOG("[nvn] WindowCrop %d,%d %dx%d", x, y, ww, hh); if (getenv("TOTK_SIZE_CHAIN")) guest_chain("window crop"); }
@@ -2463,18 +2472,24 @@ __attribute__((weak)) int runtime_game_fps_limit(void) { return 0; }
    units: it raised it to 3 and the title ran at about 10 fps). The default is the screen's rate, at most 60 on an iPhone
    14 (user 2026-10-23: 30 for an hour, then "iphone 改成锁60"). The touch controls' 60 / 30 button switches it while
    playing (runtime_phone_fps_set): every pacing decision reads it per frame. */
-static _Atomic int g_phone_hold30 = -1;   /* -1: TOTK_PHONE_FPS not read yet */
-static int phone_holds_30(void) {
+/* TOTK_PHONE_FPS=40 (2026-11-01) holds 40 the same way: every third refresh of the 120 Hz link (frontend_ios.m), cooler
+   than 60 and smoother than 30. */
+static _Atomic int g_phone_hold = -1;   /* 30, 40 or 0 (not held); -1: TOTK_PHONE_FPS not read yet */
+static int phone_hold_fps(void) {
 #if TARGET_OS_IPHONE
-    int v = atomic_load(&g_phone_hold30);
-    if (v < 0) { const char *e = getenv("TOTK_PHONE_FPS"); v = e && atoi(e) == 30; atomic_store(&g_phone_hold30, v); }
+    int v = atomic_load(&g_phone_hold);
+    if (v < 0) { const char *e = getenv("TOTK_PHONE_FPS"); int f = e ? atoi(e) : 0; v = f == 30 || f == 40 ? f : 0; atomic_store(&g_phone_hold, v); }
     return v;
 #else
     return 0;
 #endif
 }
-int runtime_phone_fps(void) { return phone_holds_30() ? 30 : 60; }
-void runtime_phone_fps_set(int fps) { atomic_store(&g_phone_hold30, fps == 30); fprintf(stderr, "[totk] phone frame rate: %s\n", fps == 30 ? "held at 30" : "up to 60"); }
+int runtime_phone_fps(void) { int v = phone_hold_fps(); return v ? v : 60; }
+void runtime_phone_fps_set(int fps) {
+    int v = fps == 30 || fps == 40 ? fps : 0;
+    atomic_store(&g_phone_hold, v);
+    if (v) fprintf(stderr, "[totk] phone frame rate: held at %d\n", v); else fprintf(stderr, "[totk] phone frame rate: up to 60\n");
+}
 /* The frame lock (the Mac settings panel, runtime/settings_panel.h; user 2026-10-25 "锁帧"): 0 off, 30, 40, 60, 72, 90 or 120. The game is
    then paced at exactly that rate as the 30 fps hold above does it (display ticks where the rate divides the display's,
    our own clock otherwise), with the uncapped clock suspended; the real-time frame step keeps game speed right. A movie
@@ -2490,7 +2505,8 @@ int nvn_fps_lock(void) { return atomic_load(&g_fps_lock); }
 /* The rate the game is held at now (0: not held): 30 for a movie or the phone's hold, then 30 / 40 / 50 for interpolation
    30+30 / 40+40 / 50+50, else the frame lock. */
 static int game_hold_fps(void) {
-    if (runtime_game_fps_limit() == 30 || phone_holds_30()) return 30;
+    if (runtime_game_fps_limit() == 30) return 30;
+    { int p = phone_hold_fps(); if (p) return p; }
     int m = mfx_hold_fps(mfx_enabled());
     return m ? m : atomic_load(&g_fps_lock);
 }
@@ -2517,6 +2533,7 @@ static double g_rt_period_ms;
 static void sleep_until_ns(uint64_t dl);
 static uint64_t present_period(const win_t *o);
 static unsigned present_ticks(const win_t *o);
+static uint64_t rt_declared_period(uint64_t period);
 extern void runtime_frame_step_update(uint64_t now_ns) __attribute__((weak_import));
 extern void movie_host_tick(void) __attribute__((weak_import));   /* TOTK runtime/movie_host.c: pre-rendered cutscenes at their own frame rate */
 __attribute__((weak)) void dm_main_yield_stats(uint64_t *n, uint64_t *ns) { *n = 0; *ns = 0; }   // 宿主 hle_thread.c 提供真值；图形单测里为 0 | The host's hle_thread.c provides the ground truth; 0 in graphics unit tests
@@ -2535,9 +2552,9 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
     // Vsync blocks here (real-device NVN: when all textures in the swapchain are waiting for display, wait for the next one to be released), not in present -- the game often calls present while holding a lock
     uint64_t at = *idx < 4 ? o->avail[*idx] : 0, now = dm_detclock_enabled() ? guest_ns() : now_ns(), wait = at > now ? at - now : 0;
     if (!dm_detclock_enabled()) {   // 取图线程登记为时间约束线程（不再只在「来早了」时才登记：热态一直落后时也要声明） | Register the acquire thread as a time-constraint thread (no longer registered only when it "arrived early": it must also declare itself when it is constantly behind in the hot state)
-        static uint64_t rt_period; uint64_t period = present_period(o);
-        if (period && rt_period != period) { rt_period = period; set_time_constraint(period); }
-        rt_comp_tick(period);
+        static uint64_t rt_period; uint64_t period = present_period(o), decl = rt_declared_period(period);
+        if (decl && rt_period != decl) { rt_period = decl; set_time_constraint(decl); }
+        rt_comp_tick(decl);
         if (mtl_link_active() && !uncapped_now() && !mfx_own_clock()) { if (!mtl_link_wait_tick(period ? 2 * period : 33333333ull, present_ticks(o)) && wait) sleep_until_ns(at); }   // DM_PRESENT_LINK：节拍完全跟显示节拍（跑得快就等下一拍，落后立刻走）；自己的 60 Hz 时钟只作等不到节拍时的兜底 | DM_PRESENT_LINK: pacing fully follows the display link (wait for the next display-link tick when running fast, go immediately when behind); our own 60 Hz clock is only the fallback when no display-link tick arrives
         else if (wait) sleep_until_ns(at);
     } else {   // DM_DETCLOCK_PACE=1（画面闸门用）：客体时钟按帧走的同时，每帧墙钟不短于一个步长——帧数与游戏内时间确定，后台加载线程每帧至少有一个步长的墙钟可用； | DM_DETCLOCK_PACE=1 (used by the screenshot gate): while the guest clock advances per frame, each frame's wall clock is no shorter than one step -- frame count and in-game time are deterministic, and the background loading thread has at least one step of wall clock available per frame;
@@ -2850,7 +2867,9 @@ static int g_hz = -1, g_display_mode;
 static int uncapped_cap(int scr) {
     const char *e = getenv("TOTK_UNCAPPED_HZ");
 #if TARGET_OS_IPHONE
-    if (!e) e = "display";   // at most the screen's rate (60 on an iPhone 14); TOTK_PHONE_FPS=30 holds 30 (phone_holds_30)
+    /* At most 60, also with the 120 Hz link (frontend_ios.m): the link runs at 120 so that a frame that missed 16.7 ms
+       is shown 8.3 ms later instead of a whole 60 Hz refresh later, not to draw 120 frames (only heat). */
+    if (!e) e = scr > 60 ? "60" : "display";
 #endif
     int v = !e ? UNCAPPED_DEFAULT_HZ : !strcmp(e, "display") ? (scr > 0 ? scr : 60) : atoi(e);
     return v < 30 ? 30 : v > UNCAPPED_HZ ? UNCAPPED_HZ : v;
@@ -2904,12 +2923,27 @@ static uint64_t present_period(const win_t *o) {
     { int hold = game_hold_fps(); if (hold) return 1000000000ull / (uint64_t)hold; }   /* exactly the held rate, by display ticks or by our own clock */
     return hz > 0 ? (uint64_t)itv * 1000000000ull / (uint64_t)hz : 0;
 }
+/* The period declared to the scheduler (set_time_constraint): the frame rate we aim for, not the one the game fell to.
+   When a busy moment makes the game raise its present interval (1 -> 2: 60 -> 30 fps), declaring the 30 fps period
+   told iOS the frame now had twice the time: it lowered the CPU (render thread 3.0 -> 1.3 GHz) and the GPU clocks
+   (7 -> 22 ms a frame for the same ~3,500 draws), so the frames that had fit in 16.7 ms no longer did and the game
+   stayed at 30 until a pause (a menu, leaving the app) reset the pacing (iPhone 17 Pro Max, 1.2.1, 2026-10-31). The
+   display's rate is declared instead, unless the player holds a lower rate on purpose (game_hold_fps: 30 to keep the
+   phone cool). TOTK_RT_TARGET=0 declares the current period as before; on by default on iPhone / iPad only. */
+static uint64_t rt_declared_period(uint64_t period) {
+    static int on = -1; if (on < 0) { const char *e = getenv("TOTK_RT_TARGET"); on = e && *e ? atoi(e) != 0 : TARGET_OS_IPHONE;
+        LOG("[nvn] 实时声明按目标帧率：%s（TOTK_RT_TARGET）", on ? "开（游戏临时掉到 30 时仍按显示器帧率声明）" : "关（按当前出图周期声明）"); }
+    if (!on || !period || game_hold_fps()) return period;
+    int hz = g_uncapped && !uncapped_now() ? g_paced_hz : g_hz;
+    uint64_t target = hz > 0 ? 1000000000ull / (uint64_t)hz : 0;
+    return target && target < period ? target : period;
+}
 /* TOTK_STATE_REPORTING (totk_state_report.m): this frame's cap as the pacing applies it (present_ticks / present_period):
    a held rate and why (and whether our own clock paces it, mfx_own_clock), else the uncapped ceiling (divided by the
    game's present interval unless that is ignored), else the game's interval at the display's rate. Game thread. */
 static void sr_frame(const win_t *o) {
     int hold = game_hold_fps(), src, cap = hold;
-    if (hold) src = runtime_game_fps_limit() == 30 ? SR_CAP_MOVIE : phone_holds_30() ? SR_CAP_PHONE : mfx_hold_fps(mfx_enabled()) ? SR_CAP_INTERP : SR_CAP_LOCK;
+    if (hold) src = runtime_game_fps_limit() == 30 ? SR_CAP_MOVIE : phone_hold_fps() ? SR_CAP_PHONE : mfx_hold_fps(mfx_enabled()) ? SR_CAP_INTERP : SR_CAP_LOCK;
     else if (!g_hz) src = SR_CAP_NONE;
     else if (g_display_mode) { src = SR_CAP_DISPLAY; cap = g_hz; }
     else if (uncapped_now()) { cap = g_hz; src = !dm_detclock_enabled() && uncapped_interval_on() ? SR_CAP_UNCAPPED : SR_CAP_UNCAPPED_INTERVAL; }

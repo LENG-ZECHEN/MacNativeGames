@@ -13,6 +13,10 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     NSTimer *_poll;
     BOOL _held, _done;       // a controller button or direction held since the last poll
     BOOL _hasPicture;        // the game's Settings pane has Full HD (docked): the picture row is shown
+    BOOL _pictureSet, _fpsSet;   // changed on this screen: only these are written back (not the values read at launch)
+    UIStackView *_pictureRow, *_fpsRow;
+    UILabel *_customInfo, *_note;
+    id _foreground;          // the foreground observer, removed at start
 }
 
 - (instancetype)initWithFrame:(CGRect)frame onStart:(void (^)(void))onStart {
@@ -38,19 +42,23 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     title.adjustsFontSizeToFitWidth = YES; title.minimumScaleFactor = 0.6;
 
     _picture = [[UISegmentedControl alloc] initWithItems:@[T(@"720p（掌机）", @"720p (handheld)"), T(@"1080p（底座）", @"1080p (docked)")]];
-    _picture.selectedSegmentIndex = [d boolForKey:@"TOTK_DOCKED"] ? 1 : 0;
-    _fps = [[UISegmentedControl alloc] initWithItems:@[@"30 fps", @"60 fps"]];
-    _fps.selectedSegmentIndex = [[d stringForKey:@"TOTK_PHONE_FPS"] isEqualToString:@"30"] ? 0 : 1;
+    _fps = [[UISegmentedControl alloc] initWithItems:@[@"30 fps", @"40 fps", @"60 fps"]];
     for (UISegmentedControl *s in @[_picture, _fps]) {
         s.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
         [s.widthAnchor constraintEqualToConstant:340].active = YES;
-        [s addTarget:self action:@selector(changed) forControlEvents:UIControlEventValueChanged];
+        [s addTarget:self action:@selector(picked:) forControlEvents:UIControlEventValueChanged];
     }
-    UIStackView *pictureRow = [self row:T(@"画面", @"Picture") control:_picture];
-    UIStackView *fpsRow = [self row:T(@"帧率", @"Frame rate") control:_fps];
+    _pictureRow = [self row:T(@"画面", @"Picture") control:_picture];
+    _fpsRow = [self row:T(@"帧率", @"Frame rate") control:_fps];
     _hasPicture = [self settingsPaneHas:@"TOTK_DOCKED"];
+    /* With the Settings app's custom picture on, the two rows above (the presets) do not apply: the screen says what
+       does instead of offering choices that change nothing. */
+    _customInfo = [UILabel new];
+    _customInfo.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium]; _customInfo.textColor = [UIColor colorWithWhite:0.85 alpha:1];
+    _customInfo.numberOfLines = 0; _customInfo.textAlignment = NSTextAlignmentCenter;
+    [_customInfo.widthAnchor constraintLessThanOrEqualToConstant:520].active = YES;
 
-    UILabel *note = [UILabel new];
+    UILabel *note = [UILabel new]; _note = note;
 #ifdef GAME_BOTW
     note.text = T(@"1080p：输出和画面都是 1920×1080，更清晰也更吃性能。设置也可以在“设置”App 里改。",
                   @"1080p: 1920×1080 output and scene, sharper and heavier. The Settings app has these choices too.");
@@ -70,7 +78,7 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
         NSMutableDictionary *m = a.mutableCopy; m[NSFontAttributeName] = [UIFont systemFontOfSize:20 weight:UIFontWeightSemibold]; return m; };
     _start = [UIButton buttonWithConfiguration:cfg primaryAction:[UIAction actionWithHandler:^(UIAction *a) { (void)a; [self start]; }]];
 
-    NSArray<UIView *> *rows = _hasPicture ? @[icon, title, pictureRow, fpsRow, note, _start] : @[icon, title, fpsRow, _start];
+    NSArray<UIView *> *rows = @[icon, title, _pictureRow, _fpsRow, _customInfo, note, _start];
     UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:rows];
     stack.axis = UILayoutConstraintAxisVertical; stack.alignment = UIStackViewAlignmentCenter; stack.spacing = 18;
     [stack setCustomSpacing:28 afterView:title]; [stack setCustomSpacing:26 afterView:note];
@@ -79,8 +87,11 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     [NSLayoutConstraint activateConstraints:@[[stack.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
                                               [stack.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
                                               [stack.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.safeAreaLayoutGuide.leadingAnchor constant:24]]];
-    [self focus];
+    [self reload];
+    /* The Settings app may change these while this screen waits (the player switches to it and back): read them again. */
     __weak TOTKStartView *weak = self;
+    _foreground = [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationWillEnterForegroundNotification object:nil queue:NSOperationQueue.mainQueue
+                                                usingBlock:^(NSNotification *n) { (void)n; [weak reload]; }];
     _poll = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60 repeats:YES block:^(NSTimer *t) { (void)t; [weak pollController]; }];
     return self;
 }
@@ -112,16 +123,50 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     return image ?: [UIImage imageNamed:@"AppIcon"] ?: [UIImage systemImageNamed:@"gamecontroller.fill"];
 }
 
+- (BOOL)custom { return [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_CUSTOM_PICTURE"]; }
+
+/* Show the settings as they are now; a row the player changed on this screen keeps the player's choice. */
+- (void)reload {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    if (!_pictureSet) _picture.selectedSegmentIndex = [d boolForKey:@"TOTK_DOCKED"] ? 1 : 0;
+    if (!_fpsSet) { NSString *f = [d stringForKey:@"TOTK_PHONE_FPS"]; _fps.selectedSegmentIndex = [f isEqualToString:@"30"] ? 0 : [f isEqualToString:@"40"] ? 1 : 2; }
+    BOOL custom = [self custom];
+    _pictureRow.hidden = custom || !_hasPicture;
+    _note.hidden = custom || !_hasPicture;
+    _fpsRow.hidden = custom;
+    _customInfo.hidden = !custom;
+    if (custom) {
+        NSString *mode = [d stringForKey:@"TOTK_IOS_PICTURE_MODE"] ?: @"720";
+        NSString *picture = [mode isEqualToString:@"mfx"] ? @"MetalFX 2K" : [mode isEqualToString:@"1080"] ? @"1080p" : @"720p";
+        NSString *scene = [d stringForKey:@"TOTK_RENDER_RES"] ?: @"960x540", *cap = [d stringForKey:@"TOTK_FPS_CAP"] ?: @"60";
+        BOOL up = [d boolForKey:@"TOTK_MFX_UPSCALE"];
+        _customInfo.text = [NSString stringWithFormat:T(@"使用“设置”App 里的自定义画质与帧率：\n画面 %@，场景 %@%@，帧率上限 %@\n（在“设置”App 里改；关闭“使用自定义设置”后这里可以选）",
+                                                        @"Custom picture and frame rate from the Settings app:\n%@ picture, %@ scene%@, up to %@ fps\n(change them there; with custom settings off, you can pick here)"),
+                            picture, scene, up ? T(@"（超分）", @" (upscaled)") : @"", cap];
+    }
+    if (_row < [self firstRow]) _row = 2;
+    [self focus];
+}
+
+- (NSInteger)firstRow { return [self custom] ? 2 : _hasPicture ? 0 : 1; }
+
+- (void)picked:(UISegmentedControl *)control {
+    if (control == _picture) _pictureSet = YES; else _fpsSet = YES;
+    [self changed];
+}
+
+/* Writes only what was changed on this screen, so a value set in the Settings app meanwhile is not put back. */
 - (void)changed {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
-    [d setBool:_picture.selectedSegmentIndex == 1 forKey:@"TOTK_DOCKED"];
-    [d setObject:_fps.selectedSegmentIndex == 0 ? @"30" : @"60" forKey:@"TOTK_PHONE_FPS"];
+    if (_pictureSet) [d setBool:_picture.selectedSegmentIndex == 1 forKey:@"TOTK_DOCKED"];
+    if (_fpsSet) [d setObject:@[@"30", @"40", @"60"][(NSUInteger)MAX(0, MIN(2, _fps.selectedSegmentIndex))] forKey:@"TOTK_PHONE_FPS"];
 }
 
 - (void)start {
     if (_done) return;
     _done = YES;
     [_poll invalidate]; _poll = nil;
+    if (_foreground) { [NSNotificationCenter.defaultCenter removeObserver:_foreground]; _foreground = nil; }
     [self changed];
     void (^go)(void) = _onStart; _onStart = nil;
     [UIView animateWithDuration:0.25 animations:^{ self.alpha = 0; } completion:^(BOOL f) { (void)f; [self removeFromSuperview]; }];
@@ -149,12 +194,12 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     if (!any) { _held = NO; return; }
     if (_held) return;
     _held = YES;
-    if (up) _row = MAX(_hasPicture ? 0 : 1, _row - 1);
+    if (up) _row = MAX([self firstRow], _row - 1);
     else if (down) _row = MIN(2, _row + 1);
     else if ((left || right) && _row < 2) {
         UISegmentedControl *s = _row == 0 ? _picture : _fps;
         s.selectedSegmentIndex = right ? 1 : 0;
-        [self changed];
+        [self picked:s];
     } else if (confirm && _row == 2) { [self start]; return; }
     else if (confirm) _row = 2;
     [self focus];

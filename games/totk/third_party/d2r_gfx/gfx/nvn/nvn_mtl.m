@@ -559,10 +559,16 @@ static _Atomic uint64_t g_last_sub_ns;
 static _Atomic int g_ka_target_us = 1000;
 static _Atomic uint64_t g_ka_n, g_ka_us, g_ka_max_us;   // spin kernels completed, their summed / longest GPU time (us)
 void mtl_keepalive_stats(uint64_t v[3]) { v[0] = atomic_load(&g_ka_n); v[1] = atomic_load(&g_ka_us); v[2] = atomic_exchange(&g_ka_max_us, 0); }
+__attribute__((weak)) int nvn_game_interval_raised(void) { return 0; }   // hle_nvn.c has the real one
 static void keepalive_start(void) {
-    static int started; const char *e = getenv("TOTK_GPU_KEEPALIVE");
+    static int started; const char *e = getenv("TOTK_GPU_KEEPALIVE"); static int auto_mode;
 #if TARGET_OS_IPHONE
-    int on = e && atoi(e);    // iPhone / iPad: off unless TOTK_GPU_KEEPALIVE=1 (the spinning heats the phone; the gain above was measured on the M4)
+    /* iPhone / iPad: by default only while the game has dropped itself to 30 fps (nvn_game_interval_raised). There the
+       GPU clock falls to fit the 30 fps frame (7 -> 23 ms for the same frame), the game measures its frame as too long and
+       never goes back to 60; spinning brings the clock back up, the game returns to 60 by itself and the spinning stops
+       (iPhone 17 Pro Max, 1.2.1, 2026-10-31: the pause menu's System tab, which resets the interval, did the same by
+       hand). TOTK_GPU_KEEPALIVE=1 spins all the time (heats the phone), =0 never. */
+    int on = !e || atoi(e); auto_mode = !e;
 #else
     int on = !e || atoi(e);
 #endif
@@ -573,13 +579,18 @@ static void keepalive_start(void) {
     id<MTLCommandQueue> q = [g_dev newCommandQueue]; id<MTLBuffer> buf = [g_dev newBufferWithLength:4096 options:MTLResourceStorageModePrivate];
     if (!ps || !q || !buf) { MLOG("【红】TOTK_GPU_KEEPALIVE：建不出自旋核 %s", err.localizedDescription.UTF8String); return; }
     { const char *us = getenv("TOTK_GPU_KEEPALIVE_US"); int v = us ? atoi(us) : 0; if (v >= 100 && v <= 1000) atomic_store(&g_ka_target_us, v); }   /* like flag keepalive_us, from the start */
-    MLOG("GPU 保活：独立队列上持续跑短自旋核（每个约 %d µs），避免 GPU 在帧间空闲时降频（TOTK_GPU_KEEPALIVE=0 关闭）", atomic_load(&g_ka_target_us));
+    MLOG("GPU 保活：独立队列上%s跑短自旋核（每个约 %d µs），避免 GPU 在帧间空闲时降频（TOTK_GPU_KEEPALIVE=0 关闭）", auto_mode ? "只在游戏掉到 30 帧档位时" : "持续", atomic_load(&g_ka_target_us));
     g_ka_idle = dispatch_semaphore_create(0);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         __block uint32_t n = 40000; dispatch_semaphore_t sem = dispatch_semaphore_create(1);   // ~1 ms on the M4 at full clock
         for (;;) @autoreleasepool {
             int target_us = atomic_load(&g_ka_target_us);
             if (!target_us) { usleep(2000); continue; }
+            if (auto_mode) {   // iPhone default: only while the game is stuck at a raised interval
+                static int was; int want = nvn_game_interval_raised();
+                if (want != was) { was = want; MLOG("GPU 保活：%s", want ? "游戏掉到了 30 帧档位，开始保活让显卡升频" : "游戏回到 60 帧档位，停止保活"); }
+                if (!want) { usleep(20000); continue; }
+            }
             uint64_t last = atomic_load(&g_last_sub_ns);
             if (!last || clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - last > 100000000ull) { usleep(10000); continue; }   // the game is not rendering
             if (atomic_load(&g_q4_inflight) > 0) { dispatch_semaphore_wait(g_ka_idle, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_MSEC)); continue; }   // the game's own GPU work keeps the clock up

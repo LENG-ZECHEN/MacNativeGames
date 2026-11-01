@@ -22,16 +22,19 @@ int totk_picture_env_build(const char *mode, totk_picture_env *out) {
     return 0;
 }
 
-/* A cap is a demand on the display: 60 paces it through DM_PRESENT_HZ, 30 is the phone's own hold
-   (TOTK_PHONE_FPS), which keeps the game's frame interval in display units; pacing the clock at 30 Hz instead raised
-   the game's interval to 3 display units and the title ran at about 10 fps (hle_nvn.c phone_holds_30).
-   The iOS display link is fixed at 60 Hz (frontend_ios.m TOTK_IOS_LINK_HZ), so there is no entry above 60: the uncapped
-   path is capped at 60 by the link anyway. */
+/* A cap is the most the phone draws. 60 leaves the pacing to the uncapped path (ceiling 60, frontend_ios.m and hle_nvn.c
+   uncapped_cap), exactly as the preset row's 60: the game's own 30 fps step is ignored there, so a busy moment costs
+   a few frames instead of halving the rate. (Until 2026-11-01 the custom 60 fixed the display link at 60 through
+   DM_PRESENT_HZ, which turned the uncapped path off: the game dropped to its 30 step and stayed there.) 30 and 40 are
+   the phone's own hold (TOTK_PHONE_FPS), which keeps the game's frame interval in display units; pacing the clock at
+   30 Hz instead raised the game's interval to 3 display units and the title ran at about 10 fps (hle_nvn.c
+   phone_hold_fps). 40 needs the 120 Hz link (every third refresh); at 60 Hz it is paced by our own clock. */
 int totk_frame_env_build(const char *cap, totk_frame_env *out) {
     if (!cap) return 0;
     totk_frame_env e;
     if (!strcmp(cap, "30")) e = (totk_frame_env){NULL, "30"};
-    else if (!strcmp(cap, "60")) e = (totk_frame_env){"60", NULL};
+    else if (!strcmp(cap, "40")) e = (totk_frame_env){NULL, "40"};
+    else if (!strcmp(cap, "60")) e = (totk_frame_env){NULL, NULL};
     else return 0;
     *out = e;
     return 1;
@@ -50,15 +53,9 @@ int totk_preset_env_build(int docked, totk_preset_env *out) {
     return 1;
 }
 
-/* The preset row's "60" is NOT the custom cap's "60": the preset leaves the pacing to the uncapped path (ceiling: the
-   display's rate), while the custom 60 paces the display link at 60. So the preset cannot reuse totk_frame_env_build,
-   whose 60 means the fixed pacing. "30" is the same hold in both. */
+/* The preset row: "60" the uncapped path (ceiling 60), "40" / "30" held. Since 2026-11-01 the same as the custom cap. */
 int totk_preset_frame_env_build(const char *fps, totk_frame_env *out) {
-    if (!fps) return 0;
-    if (!strcmp(fps, "30")) *out = (totk_frame_env){NULL, "30"};
-    else if (!strcmp(fps, "60")) *out = (totk_frame_env){NULL, NULL};
-    else return 0;
-    return 1;
+    return totk_frame_env_build(fps, out);
 }
 
 /* The keys the pane's layers own. Every other pane row is handed over whichever layer is active. Only keys that have a
@@ -76,7 +73,7 @@ totk_key_layer totk_key_layer_of(const char *key) {
 }
 
 const char *totk_frame_button_key(int custom) { return custom ? NULL : "TOTK_PHONE_FPS"; }
-int totk_frame_button_target(int held30) { return held30 ? 60 : 30; }
+int totk_frame_button_target(int now) { return now == 60 ? 40 : now == 40 ? 30 : 60; }   /* 60 -> 40 -> 30 -> 60 */
 
 /* 720p with the 960x540 scene is the combination that keeps 60 fps the longest on an iPad before the SoC throttles,
    and it is the coolest (measured 2026-10-23: GPU 12.9 ms at 960x540 against 26.2 ms at 1280x720 on the same draw

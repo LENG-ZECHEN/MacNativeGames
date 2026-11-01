@@ -119,7 +119,8 @@ int main(int argc, char **argv) {
     /* 30 is the phone's own hold, 60 paces the display link; the iOS link itself is fixed at 60 Hz, so nothing above
        60 exists. */
     frame("30", NULL, "30");
-    frame("60", "60", NULL);
+    frame("40", NULL, "40");
+    frame("60", NULL, NULL);   /* the uncapped path, as the preset row (2026-11-01: no longer a fixed 60 Hz link) */
     totk_frame_env f = {"keep", "keep"};
     if (totk_frame_env_build("90", &f) || totk_frame_env_build(NULL, &f) || strcmp(f.present_hz, "keep")) {
         failures++; fprintf(stderr, "unknown frame caps must be rejected without touching the result\n");
@@ -130,6 +131,7 @@ int main(int argc, char **argv) {
     preset(1, "docked", "1080", "1600x900", "0");
     preset(0, "handheld", NULL, NULL, "0");
     preset_frame("30", NULL, "30");
+    preset_frame("40", NULL, "40");
     preset_frame("60", NULL, NULL);
     totk_frame_env pf = {"keep", "keep"};
     if (totk_preset_frame_env_build("90", &pf) || totk_preset_frame_env_build(NULL, &pf) || strcmp(pf.present_hz, "keep")) {
@@ -146,9 +148,9 @@ int main(int argc, char **argv) {
            with a history (the picture mode replaced its row). */
         failures++; fprintf(stderr, "the key -> layer table is not what main.m and the tests expect\n");
     }
-    /* The in-game button: the preset layer saves 30 / 60 in its own row; the custom layer leaves the pane's cap alone. */
+    /* The in-game button cycles 60 -> 40 -> 30 -> 60; the preset layer saves it in its own row, the custom layer leaves the pane's cap alone. */
     if (!totk_frame_button_key(0) || strcmp(totk_frame_button_key(0), "TOTK_PHONE_FPS") || totk_frame_button_key(1) ||
-        totk_frame_button_target(0) != 30 || totk_frame_button_target(1) != 60) {
+        totk_frame_button_target(60) != 40 || totk_frame_button_target(40) != 30 || totk_frame_button_target(30) != 60) {
         failures++; fprintf(stderr, "the in-game frame-rate button mapping is wrong\n");
     }
 

@@ -131,13 +131,13 @@ static const CGFloat kFpsButtonSize = 34;
 - (CGPoint)fpsButton { CGRect a = self.area; return CGPointMake(CGRectGetMidX(a), CGRectGetMinY(a) + a.size.height * .12); }
 - (BOOL)fpsButtonAt:(CGPoint)p { CGPoint f = self.fpsButton; return hypot(p.x - f.x, p.y - f.y) < kFpsButtonSize * .75; }
 - (void)switchFrameRate {
-    /* The pane's two layers (settings_map.c): the preset layer saves 30 / 60 in its own row; the custom layer keeps the
-       cap in the pane, so this only holds 30 until the next launch and saves nothing. */
+    /* 60 -> 40 -> 30 -> 60. The pane's two layers (settings_map.c): the preset layer saves the rate in its own row; the
+       custom layer keeps the cap in the pane, so this only holds the rate until the next launch and saves nothing. */
     BOOL custom = [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_CUSTOM_PICTURE"];
-    int fps = totk_frame_button_target(runtime_phone_fps() == 30);
+    int fps = totk_frame_button_target(runtime_phone_fps());
     runtime_phone_fps_set(fps);
     const char *key = totk_frame_button_key(custom);
-    if (key) [NSUserDefaults.standardUserDefaults setObject:fps == 30 ? @"30" : @"60" forKey:@(key)];
+    if (key) [NSUserDefaults.standardUserDefaults setObject:[NSString stringWithFormat:@"%d", fps] forKey:@(key)];
     [self setNeedsDisplay];
 }
 
@@ -217,9 +217,9 @@ static void draw_stick(CGContextRef c, CGPoint o, CGPoint p, CGFloat r) {
     CGPoint f = self.fpsButton; CGRect box = CGRectMake(f.x - kFpsButtonSize / 2, f.y - kFpsButtonSize / 2, kFpsButtonSize, kFpsButtonSize);
     UIBezierPath *key = [UIBezierPath bezierPathWithRoundedRect:box cornerRadius:8];
     CGContextSetFillColorWithColor(c, fill); [key fill]; [key stroke];
-    /* The runtime only knows "held at 30" or not, so the label shows that state: after a tap that lifts the pane's cap
-       it agrees with the pacing instead of repeating the stale pane value. */
-    NSString *rate = runtime_phone_fps() == 30 ? @"30" : @"60";
+    /* The label is the runtime's rate (30, 40 or 60): after a tap that lifts the pane's cap it agrees with the pacing
+       instead of repeating the stale pane value. */
+    NSString *rate = [NSString stringWithFormat:@"%d", runtime_phone_fps()];
     NSDictionary *small = @{NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightSemibold], NSForegroundColorAttributeName: ink};
     CGSize z = [rate sizeWithAttributes:small]; [rate drawAtPoint:CGPointMake(f.x - z.width / 2, f.y - z.height / 2) withAttributes:small];
 }

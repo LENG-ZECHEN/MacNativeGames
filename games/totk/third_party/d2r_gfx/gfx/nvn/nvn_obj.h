@@ -13,6 +13,7 @@
 #endif
 #include <stdint.h>
 #include <string.h>
+#include <TargetConditionals.h>   /* TARGET_OS_IPHONE (UNCAPPED_INTERVAL_FROM_ENV) */
 #include "nvn.h"
 #include "nvn_tex.h"
 
@@ -318,7 +319,15 @@ int totk_wb_fence_on(void);
 #define BOTW_TINY_COMMIT()
 #define BOTW_LATE_FILTER(list, nl)
 #define BOTW_LATE_DROP(lo, hi)
+/* TOTK: iPhone / iPad ignore the game's present interval 2 on the uncapped path by default. When the game drops itself to
+   30 fps there, iOS lowers the GPU clock to fit the 30 fps frame and the game never measures its way back to 60; held at
+   the display's pace the frame rate falls only as far as the frame really takes and comes back by itself, at the game's
+   normal speed (iPhone 17 Pro Max, 1.2.1, 2026-10-31). The Mac keeps the interval unless TOTK_UNCAPPED_INTERVAL=1. */
+#if TARGET_OS_IPHONE
+#define UNCAPPED_INTERVAL_FROM_ENV(e) ((e) ? atoi(e) != 0 : 1)
+#else
 #define UNCAPPED_INTERVAL_FROM_ENV(e) e && atoi(e)
+#endif
 #define BOTW_RT_DUP_CLEARS()
 #define BOTW_RT_DUP_SKIP(i)
 #define BOTW_RT_DUP_PREDICT(r, cf)
