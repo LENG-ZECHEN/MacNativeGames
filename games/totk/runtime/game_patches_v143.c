@@ -228,6 +228,38 @@ static void patch_boot_race(Module *m){
     fprintf(stderr,"[totk] 1.4.3 start-up race guard: the per-frame update at main+0xaf540 waits for its pointer, veneer +%#llx\n",
             (unsigned long long)stub);
 }
+/* A second per-frame update with the same kind of race: main+0xbb120(object, next buffer slot) is called for every object
+   of a list (main+0x7e7e0, 0x9a5d0c, 0x104fd28, 0x1eea980 ...; w1 = (slot + 1) % count), and no caller reads a result.
+   It loads the pointer at +0x50 and reads [pointer - 0x30] at once (main+0xbb15c). On 2026-11-02 the pointer was still
+   empty after a mid-game switch to full screen (fault 0xffffffffffffffd0, log in ~/TOTK-MacNative/logs/fullscreen-crash-1102);
+   five more switches did not repeat it. The game already skips an object (bit 1 of +0x48) by branching to the function's
+   epilogue (main+0xbbe54, add sp, sp, #0x520, then the saved registers); the veneer takes that exit while the pointer is
+   empty. Text padding +304 (after the start-up race guard, before the Vert+ stubs at +320). TOTK_UPDATE_GUARD=0 leaves the
+   code as shipped (Mac). */
+static void patch_update_guard(Module *m){
+    const uint64_t site=0xbb158,epilogue=0xbbe54;
+    uint64_t stub=((m->text_end+15)&~15ULL)+304;
+    if(stub+16>((m->text_end+0xfff)&~0xfffULL))runtime_fail("1.4.3 update guard layout");
+    const uint32_t veneer[]={0xf9402808,   /* ldr x8, [x0, #0x50]: the replaced instruction */
+        0xb4000048,                        /* cbz x8, +8 */
+        branch(stub+8,site+4),             /* set: on as shipped */
+        branch(stub+12,epilogue)};         /* empty: skip this object */
+    uint32_t word=branch(site,stub);
+#if TARGET_OS_IPHONE
+    uint32_t got;memcpy(&got,m->base+site,4);
+    if(got!=word||memcmp(m->base+stub,veneer,sizeof veneer))runtime_fail("1.4.3 embedded update guard mismatch");
+#else
+    const char *e=getenv("TOTK_UPDATE_GUARD");
+    if(e&&!strcmp(e,"0")&&!getenv("TOTK_EXPORT_IOS")){fprintf(stderr,"[totk] 1.4.3 update guard: as shipped (TOTK_UPDATE_GUARD=0)\n");return;}
+    uint32_t w,x;memcpy(&w,m->base+site,4);memcpy(&x,m->base+epilogue,4);
+    if(w!=0xf9402808||x!=0x911483ff){fprintf(stderr,"[totk] 1.4.3 update guard: found %08x / %08x\n",w,x);
+        runtime_fail("1.4.3 update guard: original instruction mismatch");}
+    for(unsigned i=0;i<sizeof veneer;i++)if(m->base[stub+i])runtime_fail("1.4.3 update guard padding not empty");
+    memcpy(m->base+stub,veneer,sizeof veneer);memcpy(m->base+site,&word,4);
+#endif
+    fprintf(stderr,"[totk] 1.4.3 update guard: main+0xbb120 skips an object whose pointer at +0x50 is still empty, veneer +%#llx\n",
+            (unsigned long long)stub);
+}
 /* High frame rates (#466, #556, #538: translucent rocks, stone lanterns and walls above 60 FPS):
    TOTK advances distance/LOD mesh fades (0x0a7ac4, 0x95dd24) and pre-actor fades (0x6155e4, 0x615660)
    using a byte counter divided by 20. The increment added to the counter each frame is
@@ -669,6 +701,7 @@ void runtime_game_patches(Module *m) {
     patch_fixed_res(m);
     patch_slowmo_bounce(m);
     patch_boot_race(m);
+    patch_update_guard(m);
     patch_fade_increment(m);
 #if !TARGET_OS_IPHONE
     diag_main=m;   /* frmwatch / xpoke */
