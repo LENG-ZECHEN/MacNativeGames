@@ -236,7 +236,10 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
     o->magic = MAGIC('P', 'O', 'O', 'L'); o->flags = s->flags; o->mem = s->mem; o->size = s->size;
     if ((o->flags & (NVN_MEMORY_POOL_FLAGS_PHYSICAL | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) && !totk_vpool_init(o)) { o->magic = 0; return 0; }
     int gpu_visible = !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS);
-    if (o->mem && gpu_visible) { mtl_pool_add(o->mem, o->size); nvn_dirty_add_range(o->mem, o->size); }
+    /* A pool of size 0 holds nothing the GPU could read, and Metal refuses a zero-length buffer: it is left unregistered
+       (mods that add models, e.g. Wolf Link 3.2 on 1.2.1, make one when a model has no GPU data). */
+    if (o->mem && gpu_visible && o->size) { mtl_pool_add(o->mem, o->size); nvn_dirty_add_range(o->mem, o->size); }
+    else if (o->mem && gpu_visible) { static int said; if (said++ < 4) LOG("MemoryPoolInitialize: pool %p of size 0 left unregistered", (void *)o->mem); }
     if (!o->mem) LOG("【红】MemoryPoolInitialize 池没有存储 flags=%#x size=%#llx", o->flags, o->size);
     OLOG("MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, o->size, o->flags);
     if (poollog_env()) LOG("[pool] %p mem=%p..%p size=%#llx flags=%#x game=%p", (void *)p, (void *)o->mem, (void *)(o->mem + o->size), o->size, o->flags, (void *)o->game_mem);
@@ -248,7 +251,7 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
 }
 NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) {
     pool_t *o = (pool_t *)p;
-    if (o->mem && !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS)) { x_drain(); nvn_dirty_remove_range(o->mem); mtl_pool_del(o->mem); }
+    if (o->mem && o->size && !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS)) { x_drain(); nvn_dirty_remove_range(o->mem); mtl_pool_del(o->mem); }
     totk_vpool_fini(o); o->magic = 0;
 }
 /* A mirrored render target has private Metal storage. Reconcile GPU writes at mapped-range cache maintenance too:

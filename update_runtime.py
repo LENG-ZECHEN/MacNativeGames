@@ -31,6 +31,10 @@ writes), it is sealed and checked, and then takes the installed app's place as a
 the installed game data is kept, so the first start does not verify the 16 GB again, and macOS keeps its first check of
 the app folder. If the installed app then fails its --check, the replaced one is put back. A running game is waited for,
 not closed.
+
+The app's runtime must come from this checkout's history: an app built from a commit this checkout does not contain (a
+branch of its own, with fixes main lacks) is refused, since replacing its runtime would take those fixes away; update it
+from a branch that has its commit, or give --other-commit.
 """
 import argparse, json, os, plistlib, re, struct, subprocess, sys, time
 from pathlib import Path
@@ -54,6 +58,33 @@ def app_identity(app):
         raise BuildError(f'{app}: not an app build_app.py made (expected Contents/MacOS/TOTK or BotW and one version '
                          f'in Contents/Resources/totk/rewritten, found {info.get("CFBundleExecutable")} and {versions})')
     return game, versions[0]
+
+
+def check_source_commit(app, repo, other_commit=False):
+    """The app's runtime must be in this checkout's history (user 2026-10-31): update_runtime replaces the whole runtime, so
+    an app built from another branch (a local one with its own fixes) would lose everything that branch has and main does
+    not. On 2026-10-31 a 1.2.1 app built from local/totk-121-hdr was updated from a main-based branch and then crashed at
+    every start (the start-up race and big-pool fixes of that branch were gone). The app's commit is MNGSourceCommit in its
+    Info.plist (build_app.source_commit); an app without one, or a checkout that is not a git one, is not checked.
+    --other-commit replaces the runtime anyway."""
+    info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+    commit = info.get('MNGSourceCommit')
+    head = subprocess.run(['git', '-C', str(repo), 'rev-parse', '--short=7', 'HEAD'], capture_output=True, text=True)
+    if not commit or head.returncode != 0 or other_commit:
+        return
+    def git(*args):
+        return subprocess.run(['git', '-C', str(repo), *args], capture_output=True, text=True)
+    if git('cat-file', '-e', f'{commit}^{{commit}}').returncode != 0:
+        raise BuildError(f'{app.name} was built from commit {commit}, which this checkout does not have (another clone, or a '
+                         f'branch not fetched here): updating it from {head.stdout.strip()} could take away fixes that commit has. '
+                         f'Update it from the checkout that has {commit}, or give --other-commit to replace its runtime anyway')
+    if git('merge-base', '--is-ancestor', commit, 'HEAD').returncode != 0:
+        branches = [b.strip().lstrip('*+ ').strip() for b in git('branch', '--contains', commit).stdout.splitlines()]
+        where = f' (on {", ".join(b for b in branches if b)})' if any(branches) else ''
+        raise BuildError(f'{app.name} was built from commit {commit}{where}, which this checkout\'s {head.stdout.strip()} does not '
+                         f'contain: its runtime would lose what that commit has and this one does not. Bring the work onto a '
+                         f'branch that has {commit} (merge or cherry-pick) and update from there, or give --other-commit to '
+                         f'replace its runtime anyway')
 
 
 def runtime_chain():
@@ -293,11 +324,14 @@ def main(argv):
     ap.add_argument('app', type=Path, help='the app build_app.py made (Tears of the Kingdom.app, Breath of the Wild.app)')
     ap.add_argument('--work', type=Path, help='work folder to build in (default: TOTK_build or BotW_build next to the app); an '
                                               'app made before the game data folder existed, and --seed, need the one of its build')
+    ap.add_argument('--other-commit', action='store_true', help='replace the runtime even when the app was built from a commit '
+                                                                'this checkout does not contain (another branch); its fixes are then lost')
     ap.add_argument('--seed', action='store_true', help='also make the startup shaders again from the work folder\'s RomFS and '
                                                         'modules (no game file or keys), as needed when the translation chain changed')
     args = ap.parse_args(argv)
     app = args.app.expanduser().resolve()
     game, version = app_identity(app)
+    check_source_commit(app, build_app.REPO, other_commit=args.other_commit)
     stale = check_seed_chain(app / 'Contents/Resources/totk', runtime_chain(), remake=args.seed)
     work = args.work.expanduser().resolve() if args.work else app.parent / ('BotW_build' if game == 'botw' else 'TOTK_build')
     py = build_app.prerequisites(args)
