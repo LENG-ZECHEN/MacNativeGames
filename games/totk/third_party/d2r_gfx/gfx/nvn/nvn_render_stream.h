@@ -46,8 +46,10 @@ static int rs_enabled(void) {
     int v = atomic_load_explicit(&g_rs_on, memory_order_relaxed);
     if (v < 0) {
         const char *e = getenv("TOTK_RENDER_STREAM"); int expected = -1;
-        /* Mac default on (2026-10-16: replay -18%, frame -3..5%, 30-minute soak clean); iOS off (A15: two performance cores). */
-        atomic_compare_exchange_strong(&g_rs_on, &expected, e ? !strcmp(e, "1") : !TARGET_OS_IPHONE);
+        /* Default on. Mac 2026-10-16: replay -18%, frame -3..5%, 30-minute soak clean. iPhone (A19 Pro) 2026-11-01, live
+           off/on/off on the field route: replay instructions per draw -15%, and at ~1.5 GHz the frame held 55-59 fps
+           instead of 44-48; CPU power about the same (the encode thread adds ~0.5-0.8 core). TOTK_RENDER_STREAM=0 turns it off. */
+        atomic_compare_exchange_strong(&g_rs_on, &expected, e ? !strcmp(e, "1") : 1);
         v = atomic_load_explicit(&g_rs_on, memory_order_relaxed);
     }
     return v;
