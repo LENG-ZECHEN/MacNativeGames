@@ -648,7 +648,13 @@ static _Atomic uint64_t g_sub_fence_last, g_sub_fence_prev;
 void nvn_set_sync_lag(int on) { atomic_store(&g_sync_lag, on != 0); LOG("[flag] sync_lag = %d", on != 0); }
 /* Breath of the Wild has it on by default (user 2026-10-28; 1.6.0 Hebra: 8.78 -> 7.29 ms a frame with p95 unchanged, where
    Tears of the Kingdom's p95 went up to 22 ms and stays off); TOTK_SYNC_LAG=0 turns it off. */
-#ifdef GAME_BOTW
+/* iPhone / iPad (2026-11-01): on for Tears of the Kingdom too. With the wait on the newest fence the GPU idles while the
+   CPU builds each frame, so it is never fully busy even when the game is GPU-bound; iOS sets the GPU clock from how
+   busy it is, so it settled a gear or two low (a fixed probe kernel 868 us instead of 357-427; the same scene's frame
+   GPU time 13-14 ms instead of 7) and stayed there while the frame rate fell to ~50. On the moving Zora's Domain route
+   (iPhone 17 Pro Max, thermal state 2 throughout, off / on / off): mean 54.8 / 60.0 / 54.7 fps, seconds below 55
+   fps 57 / 0 / 23, frame p95 ~21 / 18.8 / ~21 ms, the GPU a gear higher with it on. */
+#if defined(GAME_BOTW) || TARGET_OS_IPHONE
 #define SYNC_LAG_DEFAULT 1
 #else
 #define SYNC_LAG_DEFAULT 0
@@ -2859,7 +2865,7 @@ static void rt_comp_tick(uint64_t period_ns) {
 extern int proc_pid_rusage(int pid, int flavor, rusage_info_t *buffer) __attribute__((weak_import));
 void mtl_gpu_probe_last(double *us, double *best, double *age_ms, int *slow);
 void nvn_gpu_recent(double *avg, double *p95, unsigned *n);
-/* TOTK_GPU_RESET (iPhone / iPad test build, default on; =0 off; 2026-11-01): does a light moment shift the GPU's clock back
+/* TOTK_GPU_RESET (iPhone / iPad, off by default; =1 on; 2026-11-01): does a light moment shift the GPU's clock back
    up? The [sec] data: the GPU sat in its lowest gear for 30 s under full load (busy ~18 of 21 ms a frame) and went to its
    top gear right after the pause menu or another light moment, with the CPU at more power than before, so not a shared
    power budget. Test: when a second ran below 56 fps with the frames' GPU time over 15 ms, twice in a row, the game thread
@@ -2869,7 +2875,7 @@ void nvn_gpu_recent(double *avg, double *p95, unsigned *n);
 static _Atomic int g_reset_ms;   /* > 0: pause this long at the next acquire */
 static void gpu_reset_second(double fps, double gpu, double probe, double probe_age, double t) {
     static int on = -1, ladder[3] = {50, 150, 400}, step, bad, wait_s; static double at_t, at_gpu, at_probe, at_fps, last_t = -100;
-    if (on < 0) { const char *e = getenv("TOTK_GPU_RESET"); on = !e || atoi(e);
+    if (on < 0) { const char *e = getenv("TOTK_GPU_RESET"); on = e && atoi(e);   /* a test: off unless TOTK_GPU_RESET=1 (pausing never shifted the GPU up) */
         const char *l = getenv("TOTK_GPU_RESET_MS"); if (l) sscanf(l, "%d,%d,%d", &ladder[0], &ladder[1], &ladder[2]);
         LOG("[reset] GPU 复位测试：%s（掉到 56 帧以下且每帧 GPU > 15 ms 连续 2 秒时，游戏线程暂停 %d / %d / %d ms 让显卡空闲）", on ? "开" : "关", ladder[0], ladder[1], ladder[2]); }
     if (!on) return;

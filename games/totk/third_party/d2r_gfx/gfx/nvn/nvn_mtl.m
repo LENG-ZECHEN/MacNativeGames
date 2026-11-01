@@ -609,7 +609,7 @@ static void keepalive_start(void) {
                    came with the CPU at 3.6-3.9 GHz, and in the drop the GPU was busy ~16.8 of each 19 ms frame, so there
                    was little idle time to fill; the CPU and GPU may be sharing one power budget instead. The probe keeps
                    measuring, and hle_nvn.c logs the CPU and GPU every second, to see which one changes first. */
-                static int probe = -1; if (probe < 0) { const char *pe = getenv("TOTK_GPU_PROBE"); probe = !pe || atoi(pe); }
+                static int probe = -1; if (probe < 0) { const char *pe = getenv("TOTK_GPU_PROBE"); probe = pe && atoi(pe); }   /* off unless TOTK_GPU_PROBE=1 */
                 static uint64_t next_ns;
                 uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW), lastsub = atomic_load(&g_last_sub_ns);
                 int rendering = lastsub && now - lastsub <= 100000000ull;
