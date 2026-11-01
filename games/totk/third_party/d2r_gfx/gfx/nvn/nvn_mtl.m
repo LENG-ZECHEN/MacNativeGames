@@ -471,8 +471,10 @@ static uint64_t g_pool_tls_hits, g_pool_tls_misses, g_pool_tls_verified;   // st
    was ~5% of the replay, its misses into the locked search another ~2%). Each thread also keeps a direct-mapped table by 4 KiB
    page of the looked-up address: a hit there skips the scan, and a pool found by the scan or the locked search is entered
    for that page. Entries are the same records under the same rules as the recent list (generation, whole range inside one
-   pool that no other pool overlaps), so a hit answers exactly what the locked search answers. TOTK_POOL_HASH=0: off. */
-#define POOL_HASH_N 256
+   pool that no other pool overlaps), so a hit answers exactly what the locked search answers. TOTK_POOL_HASH=0: off.
+   1024 slots (was 256, 2026-11-01): pages of different pools shared slots and pushed each other out; 1024 x 48 bytes per
+   thread that looks addresses up. */
+#define POOL_HASH_N 1024
 static _Thread_local pool_tls_ent g_phash[POOL_HASH_N];
 static _Atomic int g_pool_hash_on = -1;
 static uint64_t g_pool_hash_hits;
@@ -483,7 +485,7 @@ static int pool_hash_on(void) {
         if (!v) MLOG("TOTK_POOL_HASH=0: pool lookups use the 8 recent pools only"); }
     return v;
 }
-static inline unsigned pool_hash_slot(uintptr_t a) { uintptr_t pg = a >> 12; return (unsigned)(pg ^ (pg >> 8) ^ (pg >> 16)) & (POOL_HASH_N - 1); }
+static inline unsigned pool_hash_slot(uintptr_t a) { uintptr_t pg = a >> 12; return (unsigned)(pg ^ (pg >> 10) ^ (pg >> 20)) & (POOL_HASH_N - 1); }
 static int pool_tls_on(void) {
     int v = atomic_load_explicit(&g_pool_tls_on, memory_order_relaxed);
     if (v < 0) { const char *e = getenv("TOTK_POOL_TLS"); int want = !(e && !atoi(e)), expected = -1;
@@ -1009,9 +1011,40 @@ static uint64_t g_pend_reuse_done;
 static _Atomic int g_pend_arena_pin = 1;
 static uint64_t g_pend_arena_hazards;
 static int pend_over(void) { return g_pend_over_fence > g_done; }
-static int pend_hits(uint64_t a, uint64_t n) { if (pend_over()) return 1; for (int i = 0; i < g_npend; i++) if (a < g_pend_hi[i] && a + n > g_pend_lo[i]) return 1; return 0; }
+/* TOTK (2026-11-01): pend_hits scanned the whole table for every query (UI uniform checks on every UI draw; ~1.5% of the
+   replay on the iPhone). A bitmap marks the 4 KiB pages (hashed) every live entry covers: when no page of the query is
+   marked, no entry can overlap it (an overlapping entry marks the page holding the shared byte), so the answer is 0
+   without the scan; a marked page, a wide query and an entry wider than PEND_PG_WIDE pages (it sets g_pend_pg_all) scan
+   as before. pend_note marks; pend_begin, the only place entries are removed, rebuilds it. TOTK_PEND_FILTER=0: off. */
+#define PEND_PG_BITS 32768
+#define PEND_PG_WIDE 64
+static uint64_t g_pend_pg[PEND_PG_BITS / 64]; static int g_pend_pg_all;
+static uint64_t g_pend_filter_skips, g_pend_filter_scans;
+static int pend_filter_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_PEND_FILTER"); v = !(e && !atoi(e)); if (!v) MLOG("TOTK_PEND_FILTER=0: every pending-write query scans the table"); } return v; }
+static inline unsigned pend_pg_bit(uint64_t page) { return (unsigned)((page * UINT64_C(0x9E3779B97F4A7C15)) >> 49) & (PEND_PG_BITS - 1); }
+static void pend_pg_mark(uint64_t lo, uint64_t hi) {   // [lo, hi); an empty range marks lo's page (pend_hits' test is a < hi && a + n > lo)
+    if (hi < lo) { g_pend_pg_all = 1; return; }   // a range that wraps: scan
+    uint64_t p0 = lo >> 12, p1 = (hi > lo ? hi - 1 : lo) >> 12;
+    if (p1 < p0 || p1 - p0 >= PEND_PG_WIDE) { g_pend_pg_all = 1; return; }
+    for (uint64_t p = p0; p <= p1; p++) { unsigned b = pend_pg_bit(p); g_pend_pg[b >> 6] |= UINT64_C(1) << (b & 63); }
+}
+static int pend_hits(uint64_t a, uint64_t n) {
+    if (pend_over()) return 1;
+    if (!g_npend) return 0;
+    if (pend_filter_on() && !g_pend_pg_all) {
+        uint64_t p0 = a >> 12, p1 = (n ? a + n - 1 : a) >> 12;
+        if (p1 >= p0 && p1 - p0 < 16) {
+            int marked = 0;
+            for (uint64_t p = p0; p <= p1 && !marked; p++) { unsigned b = pend_pg_bit(p); marked = (g_pend_pg[b >> 6] >> (b & 63)) & 1; }
+            if (!marked) { g_pend_filter_skips++; return 0; }
+        }
+        g_pend_filter_scans++;
+    }
+    for (int i = 0; i < g_npend; i++) if (a < g_pend_hi[i] && a + n > g_pend_lo[i]) return 1;
+    return 0;
+}
 static void pend_note(uint64_t dst, uint64_t n, const void *src, int kind) {
-    if (g_npend < PEND_MAX) { g_pend_lo[g_npend] = dst; g_pend_hi[g_npend] = dst + n; g_pend_src[g_npend] = src; g_pend_kind[g_npend] = (uint8_t)kind; g_pend_fence[g_npend] = g_fence + 1; g_npend++; }
+    if (g_npend < PEND_MAX) { g_pend_lo[g_npend] = dst; g_pend_hi[g_npend] = dst + n; g_pend_src[g_npend] = src; g_pend_kind[g_npend] = (uint8_t)kind; g_pend_fence[g_npend] = g_fence + 1; g_npend++; pend_pg_mark(dst, dst + n); }
     else g_pend_over_fence = g_fence + 1;
 }
 /* Submission start: writes of earlier submissions the GPU has not completed yet stay in the table. The game updates
@@ -1026,6 +1059,8 @@ static void pend_begin(void) {
         n++;
     }
     g_npend = n;
+    memset(g_pend_pg, 0, sizeof g_pend_pg); g_pend_pg_all = 0;
+    for (int i = 0; i < n; i++) pend_pg_mark(g_pend_lo[i], g_pend_hi[i]);
 }
 /* TOTK (2026-10-15): uniform contents as of the submit call. A submission is replayed inside nvnQueueSubmitCommands for
    several milliseconds; on the console the call returns at once and the GPU reads the constants soon after. Meanwhile the
@@ -1859,6 +1894,8 @@ static uint64_t *g_upd_maxhi;
 #define UPD_GRAN_MAX 64
 static uint64_t g_upd_bits[UPD_BITS / 64]; static int g_upd_bits_any, g_upd_bits_all;
 static uint64_t g_upd_filter_q, g_upd_filter_skip;           // overlap queries past the hull test / answered by the filter
+static uint64_t g_bk_hits, g_bk_misses;   // border_key cache (registry lock)
+static uint64_t g_vstream_memo_hits;   // bind_vertex_streams: streams whose address was the last one (pool table unchanged)
 static uint64_t g_sig_incr_n, g_sig_full_n, g_tex_ser_fast_n;  // stage_sig incremental / full walks; tex_view_valid steps taken inline
 static uint64_t g_cbc_hits, g_cbc_misses, g_cbc_verified; static int cbc_mode(void);   // TOTK_CBUF_CACHE (defined before encode_args)
 static uint64_t g_pso_memo_hits, g_pso_memo_misses; static int pso_memo_on(void);   // TOTK_PSO_MEMO (defined with g_pso)
@@ -4240,8 +4277,8 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
       MLOG("[pool-query-cache] enabled=%d hits=%llu misses=%llu checked=%llu",pool_query_on(),(unsigned long long)hits,(unsigned long long)misses,(unsigned long long)checked); }
     MLOG("[pool-tls] enabled=%d hits=%llu misses=%llu verified=%llu page-table=%d page-hits=%llu",pool_tls_on(),(unsigned long long)g_pool_tls_hits,(unsigned long long)g_pool_tls_misses,(unsigned long long)g_pool_tls_verified,pool_hash_on(),(unsigned long long)g_pool_hash_hits);
     MLOG("[shadow-index] enabled=%d hit=%llu miss=%llu verified=%llu",shadow_index_on(),(unsigned long long)g_shadow_index_hits,(unsigned long long)g_shadow_index_misses,(unsigned long long)g_shadow_index_verified);
-    MLOG("[replay-fast] upd-filter=%d queries=%llu skipped=%llu | sig incremental=%llu full=%llu | tex-ser-fast steps=%llu",upd_fast_on(),(unsigned long long)g_upd_filter_q,(unsigned long long)g_upd_filter_skip,
-         (unsigned long long)g_sig_incr_n,(unsigned long long)g_sig_full_n,(unsigned long long)g_tex_ser_fast_n);
+    MLOG("[replay-fast] upd-filter=%d queries=%llu skipped=%llu | sig incremental=%llu full=%llu | tex-ser-fast steps=%llu | border-key hits=%llu misses=%llu | vstream-memo hits=%llu | pend-filter skips=%llu scans=%llu",upd_fast_on(),(unsigned long long)g_upd_filter_q,(unsigned long long)g_upd_filter_skip,
+         (unsigned long long)g_sig_incr_n,(unsigned long long)g_sig_full_n,(unsigned long long)g_tex_ser_fast_n,(unsigned long long)g_bk_hits,(unsigned long long)g_bk_misses,(unsigned long long)g_vstream_memo_hits,(unsigned long long)g_pend_filter_skips,(unsigned long long)g_pend_filter_scans);
     { int dfon; uint64_t dskip, dhash, dscan; nvn_dirty_fast_stats(&dfon, &dskip, &dhash, &dscan);
       MLOG("[replay-fast2] dirty-fast=%d blocks-skipped=%llu range-table=%llu range-scans=%llu | cbuf-cache=%d hits=%llu misses=%llu verified=%llu | ab-same=%llu | pso-memo=%d hits=%llu misses=%llu", dfon, (unsigned long long)dskip, (unsigned long long)dhash, (unsigned long long)dscan,
            cbc_mode(), (unsigned long long)g_cbc_hits, (unsigned long long)g_cbc_misses, (unsigned long long)g_cbc_verified, (unsigned long long)g_ab_same,
@@ -6175,13 +6212,17 @@ static int samp_border_custom(const samp_par *p) {
     return 1;
 }
 static _Atomic int g_border_custom_any;   // set once such a sampler is registered: border_key runs only then
+/* Sampler registrations only (mtl_reg_samp, the one writer of g_sreg / g_sreg_ok / g_nsreg; bumped under the registry lock).
+   border_key's cache keys on it instead of g_reg_gen, which every texture registration and pool add / remove also bumps:
+   those cannot change a border key (its inputs are the shader, the bound sampler ids and their g_sreg entries). */
+static uint64_t g_samp_gen = 1;
 void mtl_reg_samp(int sid, const samp_par *sp) {
     int id_ = sid; if (id_ < 0) return;
     registry_lock();
     if (id_ >= g_nsreg) { int n = id_ + 256; g_sreg = realloc(g_sreg, n * sizeof *g_sreg); g_sreg_ok = realloc(g_sreg_ok, n); g_sview = realloc(g_sview, n * sizeof *g_sview); g_srid = realloc(g_srid, n * sizeof *g_srid);
         memset(g_sreg_ok + g_nsreg, 0, n - g_nsreg); memset(g_sview + g_nsreg, 0, (n - g_nsreg) * sizeof *g_sview); memset(g_srid + g_nsreg, 0, (n - g_nsreg) * sizeof *g_srid); g_nsreg = n; }
     if (g_sview[id_]) { CFRelease(g_sview[id_]); g_sview[id_] = NULL; g_srid[id_] = 0; }
-    g_reg_gen++;
+    g_reg_gen++; g_samp_gen++;
     g_sreg[id_] = *sp; g_sreg_ok[id_] = 1;
     if (samp_border_custom(sp)) atomic_store(&g_border_custom_any, 1);
     registry_unlock();
@@ -6419,6 +6460,7 @@ static uint8_t treg_kind(const tex_t *t) { return tex_mirrored(t) ? (pkg_hashed(
    deferred-release queue (treg_clear_view_locked), so the replay may hold it unretained. As an id return each call was a
    retain + autorelease (an autorelease-pool entry) on the texture slow path. */
 #define tex_by_id(tid) ((__bridge id<MTLTexture>)tex_by_id_p(tid))
+static int tex_ser_fast_on(void);
 static void *tex_by_id_p(int tid) {   // 调用方持 g_rmu | Caller holds g_rmu
     if (g_tpool_n && tid >= g_tpool_n) { if (!g_stat_tex_oob++) MLOG("池外贴图号 %d（池容量 %d）按空槽处理：读出 0", tid, g_tpool_n); return NULL; }
     if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) { RED_ONCE(10, "贴图号 %d 未登记", tid); return NULL; }
@@ -6428,7 +6470,11 @@ static void *tex_by_id_p(int tid) {   // 调用方持 g_rmu | Caller holds g_rmu
     uint64_t sg = g_ser_gen, dg = nvn_dirty_now();   // 先取代号再查：期间若有变更，下次必走慢路 | Take the generations first and then look up: if a change happens in between, the next time must take the slow path
     /* TOTK: serial-table steps since validation that were all for other serials leave this view as it was; then only a
        CPU-mirrored texture still has to look at guest writes (tex_mtl below). */
-    int ser_same = rp->view && !rp->dead_pending && (rp->view_ser == sg || ser_unaffected(rp->view_ser, sg, rp->t.serial));
+    /* The O(1) per-serial table first (as tex_view_valid): it answers "unaffected" only when no step since view_ser was for
+       this serial or for everything, so the scan runs only on a "maybe" (a shared slot). The scan was ~1.3% of the replay
+       on the iPhone (2026-11-01 profile). TOTK_TEX_SER_FAST=0 keeps the scan alone. */
+    int ser_same = rp->view && !rp->dead_pending && (rp->view_ser == sg || (tex_ser_fast_on() && ser_unaffected_since(rp->view_ser, rp->t.serial)) ||
+                                                     ser_unaffected(rp->view_ser, sg, rp->t.serial));
     if (ser_same && (!rp->view_pkg || rp->view_dirty == treg_stamp(rp->view_pkg))) { rp->view_ser = sg; return rp->view; }
     /* TOTK: the registered texture was finalised and re-initialised at the same storage (per-frame transient textures):
        follow the memory to the live texture, as the NVN descriptor does on hardware. */
@@ -7151,7 +7197,6 @@ static int border_key_check_on(void) {
     if (value < 0) { const char *e = getenv("TOTK_BORDER_KEY_CHECK"); value = e && *e && strcmp(e, "0"); atomic_store_explicit(&cached, value, memory_order_relaxed); }
     return value;
 }
-static uint64_t g_bk_hits, g_bk_misses;
 /* Called holding the registry lock, including from the reference/check path. */
 static NSString *border_key_compute(NvShader *sh, int stage, float colours[][4], int aids[], unsigned axes[], samp_par params[], int *n) {
     *n = 0;
@@ -7186,7 +7231,7 @@ static NSString *border_key(NvShader *sh, int stage, float colours[][4], int aid
         if ((b->kind != NVN_RB_SAMP && b->kind != NVN_RB_SAMPT) || b->reg >= 128) continue;
         sids[ns++] = (uint32_t)((b->kind == NVN_RB_SAMPT ? S.tex[stage][b->reg] : S.samp[stage][b->reg]) >> 20);
     }
-    uint64_t gen = atomic_load_explicit(&g_reg_gen, memory_order_relaxed);
+    uint64_t gen = g_samp_gen;   // under the registry lock, as mtl_reg_samp's bump
     NvBorderKeyCache *cached = cache_on ? sh->border_cache : nil;
     NSString *key;
     if (cached && cached->stage == stage && cached->gen == gen && cached->nsid == ns && !memcmp(cached->sid, sids, sizeof *sids * ns)) {
@@ -7500,6 +7545,25 @@ static id<MTLFunction> vs_fn_for(NvShader *vs, NvShader *fs, int layered, int bo
     NSString *bkey = border && sh_has_src(vs) ? border_key(vs, 0, b.c, b.a, b.x, b.p, &b.n) : nil;
     if (recipe) *recipe = bkey;
     if (!function_cache_on() || vs_vin(vs, pk)) return vs_fn_variant(vs, fs, layered, bkey, b, NULL, pk);   // retyped inputs: vs->vpatch caches them
+    os_unfair_lock_lock(&g_vpatch_lock);
+    id<MTLFunction> fn = function_cache_get(vs->vertex_cache, fs, bkey, layered);
+    os_unfair_lock_unlock(&g_vpatch_lock);
+    if (fn) return fn;
+    fn = vs_fn_variant(vs, fs, layered, bkey, b, NULL, NULL);
+    os_unfair_lock_lock(&g_vpatch_lock);
+    function_cache_put(&vs->vertex_cache, fs, bkey, layered, fn);
+    os_unfair_lock_unlock(&g_vpatch_lock);
+    return fn;
+}
+/* pso_get_p's vertex border variant with the border key it already made (TOTK_PSO_MEMO): the same small function cache as
+   vs_fn_for, keyed by (fragment shader, border key object, layered), so a hit skips vs_fn_variant's varying sort and key
+   string (~1.9% of the replay on the iPhone, 2026-11-01 profile). border_key hands out the same key object while its
+   inputs (sampler generation g_samp_gen, sampler ids) hold; a new key object is a miss and builds the key as before. The
+   cache retains its keys, so an old key's address cannot come back as a different key. Retyped vertex
+   inputs (vs_vin) are not in this cache's key, so those draws go to vs_fn_variant as before. Nil (compiling) is never cached.
+   TOTK_SHADER_FUNCTION_CACHE=0 turns the cache off. */
+static id<MTLFunction> vs_fn_memo(NvShader *vs, NvShader *fs, int layered, NSString *bkey, border_in b, const pso_key *pk) {
+    if (!function_cache_on() || vs_vin(vs, pk)) return vs_fn_variant(vs, fs, layered, bkey, b, NULL, pk);
     os_unfair_lock_lock(&g_vpatch_lock);
     id<MTLFunction> fn = function_cache_get(vs->vertex_cache, fs, bkey, layered);
     os_unfair_lock_unlock(&g_vpatch_lock);
@@ -8239,7 +8303,7 @@ static void *pso_get_p(NvProg *pr, MTLRenderPassDescriptor *unused) {
         // recipes clear this pointer in pso_skey_from, keeping the stable ABI.
         /* TOTK_PSO_MEMO: the key just made is the one vs_fn_for would make again (border_key's per-stage cache, under the
            registry lock once more); vs_fn_for takes it only from a vertex shader with source. */
-        if (pso_memo_on()) { vrec = sh_has_src(vs) ? vkey : nil; if (!vrec) vb.n = 0; k.vs = (__bridge void *)vs_fn_variant(vs, fs, (k.a2c & PSO_LAYERED) != 0, vrec, vb, NULL, &k); }
+        if (pso_memo_on()) { vrec = sh_has_src(vs) ? vkey : nil; if (!vrec) vb.n = 0; k.vs = (__bridge void *)vs_fn_memo(vs, fs, (k.a2c & PSO_LAYERED) != 0, vrec, vb, &k); }
         else k.vs = (__bridge void *)vs_fn_for(vs, fs, (k.a2c & PSO_LAYERED) != 0, 1, &vrec, &k);
     } }
     g_vprobe = 0;
@@ -12344,7 +12408,16 @@ static void bind_vertex_streams(id<MTL4RenderCommandEncoder> en, NvShader *vs) {
         if(!S.vbuf[stream].address)continue;
         if(!(mask&(1u<<stream))){omitted++;continue;}
         void *mb;uint64_t mo,gpu;
-        if(mtl_gpu_addr(S.vbuf[stream].address,1,&mb,&mo,&gpu)) {
+        /* The stream's last address and its GPU address, kept per thread while the pool table is unchanged (g_pool_gen,
+           bumped under g_mu on every pool add / remove): then the lookup would find the same pool and return the same
+           address. Only successful lookups are kept; TOTK_POOL_TLS=0 or the lookup check mode looks every stream up. */
+        static _Thread_local uint64_t vs_addr[16], vs_gpu[16], vs_gen[16];
+        uint64_t pgen=atomic_load_explicit(&g_pool_gen,memory_order_acquire);
+        int memo=pool_tls_on()&&!atomic_load_explicit(&g_pool_tls_check,memory_order_relaxed);
+        if(memo&&vs_gen[stream]==pgen&&vs_addr[stream]==S.vbuf[stream].address) {
+            enc_r_vbuf(en,16+stream,vs_gpu[stream]);use_rec("buf",S.vbuf[stream].address,S.vbuf[stream].size,0,NULL);bound++;g_vstream_memo_hits++;
+        } else if(mtl_gpu_addr(S.vbuf[stream].address,1,&mb,&mo,&gpu)) {
+            if(memo){vs_addr[stream]=S.vbuf[stream].address;vs_gpu[stream]=gpu;vs_gen[stream]=pgen;}
             enc_r_vbuf(en,16+stream,gpu);use_rec("buf",S.vbuf[stream].address,S.vbuf[stream].size,0,NULL);bound++;
         }
     }
