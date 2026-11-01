@@ -46,9 +46,6 @@ static int dram_8gb(void){
  static int v=-1;if(v<0){const char *e=getenv("TOTK_DRAM_8GB");v=e&&*e&&strcmp(e,"0");}return v;
 #endif
 }
-#if TARGET_OS_IPHONE
-#define LOW_SIZE (HEAP_OFF+HEAP_CAP)   /* iOS: no slack after the heap cap; address space is scarce */
-#else
 /* The 8 GB mode's heap with a bigger output (1.4.3 native 4K: about +1.35 GiB in the texture heaps) is about 7.15 GiB,
    past the 7 GiB cap: SetHeapSize failed (0xd401) in nninitStartup. So that mode's cap and region grow by the extra
    texture-heap bytes (app_pool), rounded up to whole GiB. The retail layout's 4 GiB cap already has room. */
@@ -59,6 +56,9 @@ static uint64_t heap_extra(void){
  static uint64_t v=1;if(v==1)v=dram_8gb()?(runtime_output_res_extra_bytes()+(1ULL<<30)-1)&~((1ULL<<30)-1):0;return v;
 #endif
 }
+#if TARGET_OS_IPHONE
+#define LOW_SIZE (HEAP_OFF+HEAP_CAP)   /* iOS: no slack after the heap cap; address space is scarce */
+#else
 #define LOW_SIZE ((dram_8gb()?8ULL<<30:6ULL<<30)+heap_extra())   /* 8 GiB: room for the 8 GB mode's 7 GiB heap cap after the stack */
 #endif
 #define STACK_OFF 0x10000000ULL
