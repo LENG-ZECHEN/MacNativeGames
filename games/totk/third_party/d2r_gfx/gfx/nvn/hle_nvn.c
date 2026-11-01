@@ -2457,6 +2457,7 @@ NVN(nvnWindowSetCrop, void, NVNwindow *w, int x, int y, int ww, int hh) {
 }
 static void trow(uint64_t f, const char *name, double v);
 static void set_time_constraint(uint64_t period_ns);
+static _Atomic int g_rt_reapply;   // tentative, defined with rt_comp_fixed_ms ("flag rt_comp")
 static void rt_comp_tick(uint64_t period_ns);
 static int g_uncapped;   // TOTK_UNCAPPED configured, see present_cfg; suspended while frame interpolation paces the game (uncapped_now)
 static int g_paced_hz;   // the display-following rate, used instead of the uncapped clock while interpolation paces the game
@@ -2554,7 +2555,11 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
     if (!dm_detclock_enabled()) {   // 取图线程登记为时间约束线程（不再只在「来早了」时才登记：热态一直落后时也要声明） | Register the acquire thread as a time-constraint thread (no longer registered only when it "arrived early": it must also declare itself when it is constantly behind in the hot state)
         static uint64_t rt_period; uint64_t period = present_period(o), decl = rt_declared_period(period);
         if (decl && rt_period != decl) { rt_period = decl; set_time_constraint(decl); }
+        else if (rt_period && atomic_exchange(&g_rt_reapply, 0)) set_time_constraint(rt_period);   /* "flag rt_comp" */
         rt_comp_tick(decl);
+#if TARGET_OS_IPHONE
+        { void sec_log_x(void); sec_log_x(); }
+#endif
         if (mtl_link_active() && !uncapped_now() && !mfx_own_clock()) { if (!mtl_link_wait_tick(period ? 2 * period : 33333333ull, present_ticks(o)) && wait) sleep_until_ns(at); }   // DM_PRESENT_LINK：节拍完全跟显示节拍（跑得快就等下一拍，落后立刻走）；自己的 60 Hz 时钟只作等不到节拍时的兜底 | DM_PRESENT_LINK: pacing fully follows the display link (wait for the next display-link tick when running fast, go immediately when behind); our own 60 Hz clock is only the fallback when no display-link tick arrives
         else if (wait) sleep_until_ns(at);
     } else {   // DM_DETCLOCK_PACE=1（画面闸门用）：客体时钟按帧走的同时，每帧墙钟不短于一个步长——帧数与游戏内时间确定，后台加载线程每帧至少有一个步长的墙钟可用； | DM_DETCLOCK_PACE=1 (used by the screenshot gate): while the guest clock advances per frame, each frame's wall clock is no shorter than one step -- frame count and in-game time are deterministic, and the background loading thread has at least one step of wall clock available per frame;
@@ -2820,7 +2825,12 @@ void set_time_constraint_comp_x(uint64_t period_ns, uint64_t comp_ns) {
     kern_return_t kr = thread_policy_set(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&p, THREAD_TIME_CONSTRAINT_POLICY_COUNT);
     LOG("[nvn] 翻译线程时间约束策略（周期 %.3f ms、计算 %.3f ms）%s", period_ns / 1e6, comp_ns / 1e6, kr == KERN_SUCCESS ? "已设" : "设置失败");
 }
-static int rt_comp_fixed_ms(void) { static int v = -2; if (v == -2) { const char *e = getenv("DM_RT_COMP"); v = e && *e && strcmp(e, "auto") ? atoi(e) : -1; } return v; }   // −1 = auto
+static _Atomic int g_rt_fixed = -2;      // DM_RT_COMP (-2: not read yet, -1: auto, else ms); "flag rt_comp <ms>" changes it while running
+static _Atomic int g_rt_reapply;          // the flag set it: the real-time thread re-declares at its next acquire (a thread can only set its own policy)
+static int rt_comp_fixed_ms(void) { int v = atomic_load(&g_rt_fixed); if (v == -2) { const char *e = getenv("DM_RT_COMP"); v = e && *e && strcmp(e, "auto") ? atoi(e) : -1; atomic_store(&g_rt_fixed, v); } return v; }   // −1 = auto
+/* "flag rt_comp <ms>" (2026-11-01, diagnostics): a fixed declared computation, 0 = back to auto (which then adapts from the
+   value declared now). For A/B of the declaration's effect on the CPU clock within one run. */
+void nvn_set_rt_comp(int ms) { atomic_store(&g_rt_fixed, ms > 0 ? ms : -1); atomic_store(&g_rt_reapply, 1); LOG("[flag] rt_comp = %d%s", ms, ms > 0 ? " ms" : "（自动）"); }
 /* The fixed value; in auto mode the computation declared so far, and auto's starting value of 2 ms only the first time.
    TOTK (from nxnative 04ea8f8): resetting to 2 ms at each period change (the game's present interval 1 <-> 2, key 2's
    modes) under-declared the thread until the next p90 window (120 frames); nxnative measured an iPhone then moving the
@@ -2838,6 +2848,79 @@ static void rt_comp_tick(uint64_t period_ns) {
     double p90 = v[107], comp = p90 * 1.25, cap = period_ns * 0.9 / 1e6; if (comp > cap) comp = cap; if (comp < 1) comp = 1;
     if (comp > g_rt_comp_ms * 1.15 || comp < g_rt_comp_ms * 0.85) set_time_constraint_comp(period_ns, (uint64_t)(comp * 1e6));
 }
+/* TOTK_SEC_LOG (iPhone / iPad, default on; =0 off; 2026-11-01): one line a second with the CPU and the GPU side by side,
+   to see which one changes first when the same scene's frame GPU time doubles (the clock probe in nvn_mtl.m showed the
+   GPU clock low then, with the CPU at 3.6-3.9 GHz). Per second: frames and the longest frame; the frames' GPU time
+   (mean / p95, nvn_gpu_recent); the fixed probe kernel (the GPU clock); this thread's CPU time and clock (the game's
+   real-time thread, which declares the period); the submit thread's clock; the whole process's CPU time (cores busy),
+   cycles per CPU second and CPU energy (rusage v6 ri_energy_nj, as watts; P cores separately); the game's own present
+   interval, the declared computation and the thermal state. Game thread, at acquire. */
+#if TARGET_OS_IPHONE
+extern int proc_pid_rusage(int pid, int flavor, rusage_info_t *buffer) __attribute__((weak_import));
+void mtl_gpu_probe_last(double *us, double *best, double *age_ms, int *slow);
+void nvn_gpu_recent(double *avg, double *p95, unsigned *n);
+/* TOTK_GPU_RESET (iPhone / iPad test build, default on; =0 off; 2026-11-01): does a light moment shift the GPU's clock back
+   up? The [sec] data: the GPU sat in its lowest gear for 30 s under full load (busy ~18 of 21 ms a frame) and went to its
+   top gear right after the pause menu or another light moment, with the CPU at more power than before, so not a shared
+   power budget. Test: when a second ran below 56 fps with the frames' GPU time over 15 ms, twice in a row, the game thread
+   pauses once at acquire, so the GPU finishes the queued work and idles. 50 ms first; if 3 s later the frames' GPU time
+   has not fallen by a third, 150 ms, then 400 ms; then the ladder starts again. At least 5 s between pauses. Each pause
+   and its result 3 s later are logged ([reset]). TOTK_GPU_RESET_MS=<a,b,c> sets the ladder. */
+static _Atomic int g_reset_ms;   /* > 0: pause this long at the next acquire */
+static void gpu_reset_second(double fps, double gpu, double probe, double probe_age, double t) {
+    static int on = -1, ladder[3] = {50, 150, 400}, step, bad, wait_s; static double at_t, at_gpu, at_probe, at_fps, last_t = -100;
+    if (on < 0) { const char *e = getenv("TOTK_GPU_RESET"); on = !e || atoi(e);
+        const char *l = getenv("TOTK_GPU_RESET_MS"); if (l) sscanf(l, "%d,%d,%d", &ladder[0], &ladder[1], &ladder[2]);
+        LOG("[reset] GPU 复位测试：%s（掉到 56 帧以下且每帧 GPU > 15 ms 连续 2 秒时，游戏线程暂停 %d / %d / %d ms 让显卡空闲）", on ? "开" : "关", ladder[0], ladder[1], ladder[2]); }
+    if (!on) return;
+    if (wait_s) {   /* a pause happened: judge it 3 s later */
+        if (--wait_s) return;
+        int ok = gpu > 0 && gpu < at_gpu * 2 / 3;
+        LOG("[reset] 结果（暂停 %d ms，%.0f s 前）：GPU 每帧 %.1f → %.1f ms，测速 %.0f → %.0f µs（%.0f ms 前测的），%.0f → %.0f fps：%s",
+            ladder[step], t - at_t, at_gpu, gpu, at_probe, probe, probe_age, at_fps, fps, ok ? "显卡升档了" : "没有升档");
+        step = ok ? 0 : (step + 1) % 3; bad = 0; last_t = t; return;
+    }
+    bad = fps < 56 && gpu > 15 ? bad + 1 : 0;
+    if (bad < 2 || t - last_t < 5) return;
+    at_t = t; at_gpu = gpu; at_probe = probe; at_fps = fps; wait_s = 3;
+    LOG("[reset] 第 %d 级：暂停 %d ms（%.0f fps，GPU 每帧 %.1f ms，测速 %.0f µs，%.0f ms 前测的）", step + 1, ladder[step], fps, gpu, probe, probe_age);
+    atomic_store(&g_reset_ms, ladder[step]);
+}
+static void sec_log(uint64_t frame) {
+    static int on = -1; if (on < 0) { const char *e = getenv("TOTK_SEC_LOG"); on = !e || atoi(e); }
+    if (!on) return;
+    static uint64_t t0, last, f0, my_cyc0, my_cpu0, sub_cyc0, sub_cpu0, p_cyc0, p_cpu0, p_nj0, p_pnj0; static double fmax;
+    static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
+    uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    { static uint64_t prev; if (prev) { double d = (now - prev) / 1e6; if (d > fmax) fmax = d; } prev = now; }
+    if (now - last < 1000000000ull) return;
+    uint64_t ins, cyc; thr_counts(&ins, &cyc); uint64_t cpu = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID);
+    uint64_t scyc = atomic_load(&g_cum_sub_cyc), scpu = atomic_load(&g_cum_sub_cpu_ns);
+    struct rusage_info_v6 ri; int rok = proc_pid_rusage && proc_pid_rusage(getpid(), RUSAGE_INFO_V6, (rusage_info_t *)&ri) == 0;
+    uint64_t pcpu = rok ? (ri.ri_user_time + ri.ri_system_time) * tb.numer / tb.denom : 0, pcyc = rok ? ri.ri_cycles : 0;
+    uint64_t nj = rok ? ri.ri_energy_nj : 0, pnj = rok ? ri.ri_penergy_nj : 0;
+    if (last) {
+        double dt = (now - last) / 1e9, nf = (double)(frame - f0);
+        double ga, g95; unsigned gn; nvn_gpu_recent(&ga, &g95, &gn);
+        double pu, pb, page; int slow; mtl_gpu_probe_last(&pu, &pb, &page, &slow);
+        double my = (cpu - my_cpu0) / 1e6, myghz = cpu > my_cpu0 ? (double)(cyc - my_cyc0) / (double)(cpu - my_cpu0) : 0;
+        double subghz = scpu > sub_cpu0 ? (double)(scyc - sub_cyc0) / (double)(scpu - sub_cpu0) : 0;
+        double cores = rok ? (pcpu - p_cpu0) / 1e9 / dt : -1, pghz = rok && pcpu > p_cpu0 ? (double)(pcyc - p_cyc0) / (double)(pcpu - p_cpu0) : 0;
+        double w = rok ? (nj - p_nj0) / 1e9 / dt : -1, pw = rok ? (pnj - p_pnj0) / 1e9 / dt : -1;
+        LOG("[sec] %.0f s 帧 %llu：%.0f fps 最长 %.1f ms｜GPU 每帧 %.1f / p95 %.1f ms，测速 %.0f µs（最快 %.0f，%.0f ms 前测的%s）｜主线程 CPU %.0f ms/s @ %.2f GHz，提交 @ %.2f GHz，全进程 %.2f 核 @ %.2f GHz、CPU 功耗 %.2f W（P 核 %.2f W）｜游戏档位 %d，声明计算 %.1f ms，温控 %d",
+            (now - t0) / 1e9, (unsigned long long)frame, nf / dt, fmax, ga, g95, pu, pb, page, slow ? "，判为降频" : "",
+            my / dt, myghz, subghz, cores, pghz, w, pw, atomic_load(&g_interval_raised) ? 2 : 1, g_rt_comp_ms, dm_thermal_now());
+        gpu_reset_second(nf / dt, ga, pu, page, (now - t0) / 1e9);
+    } else t0 = now;
+    last = now; f0 = frame; fmax = 0; my_cyc0 = cyc; my_cpu0 = cpu; sub_cyc0 = scyc; sub_cpu0 = scpu; p_cyc0 = pcyc; p_cpu0 = pcpu; p_nj0 = nj; p_pnj0 = pnj;
+}
+void sec_log_x(void) {
+    sec_log(g_frame);
+    int ms = atomic_exchange(&g_reset_ms, 0);
+    if (ms > 0) { uint64_t a = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); usleep((useconds_t)ms * 1000);
+        LOG("[reset] 已暂停 %.1f ms", (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - a) / 1e6); }
+}
+#endif
 static void sleep_until_ns(uint64_t dl) {   // 单调时钟上的绝对时刻 | absolute time on the monotonic clock
     static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
     uint64_t now = now_ns(); if (dl <= now) return;
