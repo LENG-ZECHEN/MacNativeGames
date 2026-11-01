@@ -197,6 +197,37 @@ static void patch_slowmo_bounce(Module *m){
 #endif
     fprintf(stderr,"[totk] 1.4.3 high-FPS fix: trampoline slow-motion check uses the time scale, veneer +%#llx\n",(unsigned long long)stub);
 }
+/* The start-up race of game_patches.c patch_boot_race (1.2.1 main+0x8e0540), in 1.4.3: the same per-frame update is
+   main+0xaf540, called from main+0xe67434 with the object at [x19 + 0xa10] (the caller's three calls match 1.2.1's
+   main+0x8d35c8 word for word). It loads the pointer at +0x2e0 (1.2.1: +0x2b0) and reads through it at once
+   (main+0xaf574); another thread fills that pointer while the game starts. The veneer skips the update while the pointer
+   is still empty: it branches to the function's epilogue (main+0xaf9c0, add sp, sp, #0x470, then the saved registers,
+   unchanged so far), and the caller reads nothing it returns. Text padding +288 (after the bounce veneer, before the
+   Vert+ stubs at +320). TOTK_BOOT_RACE_GUARD=0 leaves the code as shipped (Mac). */
+static void patch_boot_race(Module *m){
+    const uint64_t site=0xaf560,epilogue=0xaf9c0;
+    uint64_t stub=((m->text_end+15)&~15ULL)+288;
+    if(stub+16>((m->text_end+0xfff)&~0xfffULL))runtime_fail("1.4.3 start-up race guard layout");
+    const uint32_t veneer[]={0xf9417018,   /* ldr x24, [x0, #0x2e0]: the replaced instruction */
+        0xb4000058,                        /* cbz x24, +8 */
+        branch(stub+8,site+4),             /* set: on as shipped */
+        branch(stub+12,epilogue)};         /* empty: return */
+    uint32_t word=branch(site,stub);
+#if TARGET_OS_IPHONE
+    uint32_t got;memcpy(&got,m->base+site,4);
+    if(got!=word||memcmp(m->base+stub,veneer,sizeof veneer))runtime_fail("1.4.3 embedded start-up race guard mismatch");
+#else
+    const char *e=getenv("TOTK_BOOT_RACE_GUARD");
+    if(e&&!strcmp(e,"0")&&!getenv("TOTK_EXPORT_IOS")){fprintf(stderr,"[totk] 1.4.3 start-up race guard: as shipped (TOTK_BOOT_RACE_GUARD=0)\n");return;}
+    uint32_t w,x;memcpy(&w,m->base+site,4);memcpy(&x,m->base+epilogue,4);
+    if(w!=0xf9417018||x!=0x9111c3ff){fprintf(stderr,"[totk] 1.4.3 start-up race guard: found %08x / %08x\n",w,x);
+        runtime_fail("1.4.3 start-up race guard: original instruction mismatch");}
+    for(unsigned i=0;i<sizeof veneer;i++)if(m->base[stub+i])runtime_fail("1.4.3 start-up race guard padding not empty");
+    memcpy(m->base+stub,veneer,sizeof veneer);memcpy(m->base+site,&word,4);
+#endif
+    fprintf(stderr,"[totk] 1.4.3 start-up race guard: the per-frame update at main+0xaf540 waits for its pointer, veneer +%#llx\n",
+            (unsigned long long)stub);
+}
 /* High frame rates (#466, #556, #538: translucent rocks, stone lanterns and walls above 60 FPS):
    TOTK advances distance/LOD mesh fades (0x0a7ac4, 0x95dd24) and pre-actor fades (0x6155e4, 0x615660)
    using a byte counter divided by 20. The increment added to the counter each frame is
@@ -637,6 +668,7 @@ void runtime_game_patches(Module *m) {
     patch_render_res(m);
     patch_fixed_res(m);
     patch_slowmo_bounce(m);
+    patch_boot_race(m);
     patch_fade_increment(m);
 #if !TARGET_OS_IPHONE
     diag_main=m;   /* frmwatch / xpoke */
