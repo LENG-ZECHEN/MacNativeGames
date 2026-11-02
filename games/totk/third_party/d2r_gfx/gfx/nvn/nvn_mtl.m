@@ -11973,6 +11973,14 @@ static uint64_t ghost_tex(void) {   // 这次绘制的片元着色器实际采�
     __unsafe_unretained NvProg *pr = S.prog ? prog_get(S.prog) : nil; NvShader *f = pr ? pr->sh[1] : nil; if (!f) return 0;
     for (int i = 0; i < f->rf.nb; i++) if ((f->rf.b[i].kind == NVN_RB_TEX || f->rf.b[i].kind == NVN_RB_SAMP) && f->rf.b[i].reg < 128 && S.tex[1][f->rf.b[i].reg]) return S.tex[1][f->rf.b[i].reg];
     return 0; }
+/* n bytes at the guest address a as this draw reads them: from memory, or, when this submission still has writes pending
+   there, with those writes applied (pend_materialize). 0 when the memory is not mapped. */
+static int ui_read_now(uint64_t a, void *out, size_t n) {
+    void *b; uint64_t o; const uint8_t *p;
+    if (!a || !mtl_addr(a, n, &b, &o) || !(p = [(__bridge id<MTLBuffer>)b contents])) return 0;
+    if (pend_hits(a, n)) pend_materialize(a, out, n, 0); else memcpy(out, p + o, n);
+    return 1;
+}
 // 当前这次界面绘制是不是「不带贴图、正好盖满整个界面矩形」（界面矩形占贴图上部 hf）
 // Whether the current UI draw is "untextured and exactly covering the whole UI rectangle" (the UI rectangle occupies the upper hf of the texture)
 static int ui_cover_all(double hf) {
@@ -11992,11 +12000,11 @@ static int ui_cover_all(double hf) {
 static int ui_covers_layout(void) {
     static int off = -1; if (off < 0) { const char *e = getenv("TOTK_UI_COVER_WIDE"); off = e && !strcmp(e, "0"); }
     if (off || S.vbuf[0].size != 80) return 0;
-    const p_bind_buf *u = &S.ubo[0][0]; void *vb, *mb; uint64_t vo, mo; const uint8_t *vp_, *mp_;
-    if (!u->addr || u->size < 64 || pend_hits(u->addr, 64) || pend_hits(S.vbuf[0].address, 80)) return 0;
-    if (!mtl_addr(S.vbuf[0].address, 80, &vb, &vo) || !(vp_ = [(__bridge id<MTLBuffer>)vb contents]) || !mtl_addr(u->addr, 64, &mb, &mo) || !(mp_ = [(__bridge id<MTLBuffer>)mb contents])) return 0;
-    float m[16], x0 = 9, y0 = 9, x1 = -9, y1 = -9; memcpy(m, mp_ + mo, 64);
-    for (int i = 0; i < 4; i++) { float f[2]; memcpy(f, vp_ + vo + 20 * i, 8); float nx = (m[0] * f[0] + m[4] * f[1] + m[12] + 1) / 2, ny = (m[1] * f[0] + m[5] * f[1] + m[13] + 1) / 2;
+    const p_bind_buf *u = &S.ubo[0][0]; uint8_t vtx[80];
+    if (!u->addr || u->size < 64) return 0;
+    float m[16], x0 = 9, y0 = 9, x1 = -9, y1 = -9;
+    if (!ui_read_now(u->addr, m, 64) || !ui_read_now(S.vbuf[0].address, vtx, 80)) return 0;   // pending writes too (ui2d_quad_covers_screen)
+    for (int i = 0; i < 4; i++) { float f[2]; memcpy(f, vtx + 20 * i, 8); float nx = (m[0] * f[0] + m[4] * f[1] + m[12] + 1) / 2, ny = (m[1] * f[0] + m[5] * f[1] + m[13] + 1) / 2;
         x0 = fminf(x0, nx); x1 = fmaxf(x1, nx); y0 = fminf(y0, ny); y1 = fmaxf(y1, ny); }
     return x0 < 0.002f && x1 > 0.998f && y0 < 0.002f && y1 > 0.998f;
 }
@@ -12017,14 +12025,16 @@ static float g_ui2d_box[4];
 static int g_uw_seq, g_uw_phase;   // catalogue: order in the frame; 0 not the map screen, 1 the map, 2 its markers, 3 the rest
 static int ui2d_quad_covers_screen(void) {
     if (S.nattr != 1 || S.stream[0].stride != 8 || S.vbuf[0].size < 32) return -1;
-    const p_bind_buf *u = &S.ubo[0][0]; void *vb, *mb; uint64_t vo, mo; const uint8_t *vp_, *mp_;
-    if (!u->addr || u->size < 34 * 16 || pend_hits(u->addr, 34 * 16) || pend_hits(S.vbuf[0].address, 32)) return -1;
-    if (!mtl_addr(S.vbuf[0].address, 32, &vb, &vo) || !(vp_ = [(__bridge id<MTLBuffer>)vb contents]) ||
-        !mtl_addr(u->addr, 34 * 16, &mb, &mo) || !(mp_ = [(__bridge id<MTLBuffer>)mb contents])) return -1;
-    float c[34][4]; memcpy(c, mp_ + mo, sizeof c);
+    const p_bind_buf *u = &S.ubo[0][0];
+    if (!u->addr || u->size < 34 * 16) return -1;
+    /* The pane's constants and corners as this draw reads them: written earlier in this submission (the map scrolled under
+       the cursor, a loading screen's first frame) they are still pending, and the draw used to count as unreadable (-1)
+       for that frame - the map's sides cut to the middle 16:9, a full-screen picture squeezed once (iPhone, 2026-11-03). */
+    float c[34][4], vtx[4][2];
+    if (!ui_read_now(u->addr, c, sizeof c) || !ui_read_now(S.vbuf[0].address, vtx, sizeof vtx)) return -1;
     float x0 = 9, x1 = -9, y0 = 9, y1 = -9;
     for (int i = 0; i < 4; i++) {
-        float v[2]; memcpy(v, vp_ + vo + 8 * i, 8);
+        float v[2] = {vtx[i][0], vtx[i][1]};
         float px = v[0] * c[33][0] + c[33][2], py = -v[1] * c[33][1] + c[33][3], w[3], q[4];
         for (int r = 0; r < 3; r++) w[r] = c[4 + r][0] * px + c[4 + r][1] * py + c[4 + r][3];
         for (int r = 0; r < 4; r++) q[r] = c[r][0] * w[0] + c[r][1] * w[1] + c[r][2] * w[2] + c[r][3];
