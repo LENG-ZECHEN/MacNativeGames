@@ -2777,6 +2777,11 @@ void dm_gfx_set_flag(const char *name, int v) {
         if (v >= 0 && v < 4 && vr_set_resolution(sz[v][0], sz[v][1])) MLOG("[flag] vr_res: %dx%d per eye", sz[v][0], sz[v][1]);
         else MLOG("[flag] vr_res %d: not available (TOTK_VR_STREAMER not set, or 0..3)", v);
         return; }
+#if TARGET_OS_IPHONE
+    /* Both hooks live in game_patches_v143.c's macOS-only part: a weak reference to a symbol nothing defines still fails
+       the iOS link (the app is one static executable), so the phone has neither flag. */
+    if (!strcmp(name, "vr_findhead") || !strcmp(name, "cam_dist")) { MLOG("[flag] %s: not on iPhone / iPad", name); return; }
+#else
     if (!strcmp(name, "vr_findhead")) {   // diagnostic: bone matrices near the player's head (1: scan, 2: after crouching)
         extern void runtime_vr_find_head(int stage) __attribute__((weak_import));
         if (runtime_vr_find_head) runtime_vr_find_head(v); return; }
@@ -2784,6 +2789,7 @@ void dm_gfx_set_flag(const char *name, int v) {
         extern void runtime_camera_distance_set(int cm) __attribute__((weak_import));
         if (runtime_camera_distance_set) runtime_camera_distance_set(v); else MLOG("[flag] cam_dist: no camera hook in this version");
         return; }
+#endif
     if (!strcmp(name, "vr_fp")) { vr_set_first_person(v); return; }    // first person 1 / third person 0
     if (!strcmp(name, "vr_eye")) { vr_set_eye_cm(v); return; }         // first person: eye height in cm
     if (!strcmp(name, "vr_pitch")) { vr_set_pitch_lock(v); return; }   // 1: up / down only from the headset
