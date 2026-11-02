@@ -1240,7 +1240,9 @@ void runtime_game_patches(Module *m) {
                      ((m->text_end + 15) & ~15ULL) + 320,   /* Vert+ stubs (2 x 304 bytes): after the bounce veneer at +256, before the rewriter's code at +1024 */
                      (m->file_size + 0x3fff) & ~0x3fffULL); }
 #if !TARGET_OS_IPHONE
-    vr_headlook_install(m);
+    /* Not in the iOS export: its branches load this Mac process's address of vr_cam_hook / vr_view0_hook (ldr x16; br x16),
+       which the phone's code then jumped to (EXC_BAD_ACCESS inside the app's data 57 s after start, 2026-11-03). */
+    if (!getenv("TOTK_EXPORT_IOS")) vr_headlook_install(m);
 #endif
     patch_bench_cam(m);
     patch_lod_distance(m);
