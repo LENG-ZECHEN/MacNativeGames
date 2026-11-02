@@ -270,29 +270,6 @@ static NSMutableArray *variants_of(NSString *shader) {
     g_variants[shader] = v;
     return v;
 }
-/* Whether a variant translated with deps serves these answers. A texture slot whose kind the translator took from the
-   sampling instruction records only whether a depth-format texture sits there: "*" (any other) or "*_depth"
-   (Service.cs, docs/shader-variants.md). Vertex input and colour output types do not matter: the pipeline redeclares an
-   input whose type differs from its bound format's (nvn_mtl.m vs_vin, 2026-10-25) and an output whose type differs from
-   its render target's (fn_retype_outputs, 2026-10-26), and an unbound input gets a constant of the declared type
-   (pso_desc), so any variant serves them. prepare_shader_seed.py deps_match is the same. */
-static int deps_match(NSDictionary *deps, NSDictionary *ans) {
-    NSDictionary *defaults = @{@"tex": @"2d", @"img": @{}};
-    for (NSString *kind in defaults) {
-        NSDictionary *want = deps[kind], *have = ans[kind];
-        for (NSString *slot in want) {
-            id w = want[slot], h = have[slot];
-            if (!h) h = defaults[kind];
-            if ([w isEqual:@"*"] || [w isEqual:@"*_depth"]) {
-                if (![h isKindOfClass:NSString.class] || [h hasSuffix:@"_depth"] != [w isEqual:@"*_depth"]) return 0;
-                continue;
-            }
-            if (![h isEqual:w]) return 0;
-        }
-    }
-    return 1;
-}
-
 /* No translator: the iPhone / iPad, or TOTK_SHADER_NO_TRANSLATE=1 on the Mac (tests: what a device with only the prepared
    shaders would skip, with the same miss records and skipped draws). */
 static int no_translator(void) {
@@ -324,7 +301,7 @@ static NSString *variant_lookup(NSString *shader, NSDictionary *answers) {
     NSMutableArray *vs = variants_of(shader);
     for (NSUInteger i = 0; i < vs.count; i++) {
         NSDictionary *v = vs[i];
-        if (!deps_match(v[@"deps"], answers)) continue;
+        if (!totk_deps_match(v[@"deps"], answers)) continue;   // totk_shader_contrib.h: the contribution file's pruning picks so too
         NSString *found = v[@"variant"];
         if (!g_msl_checked) g_msl_checked = [NSMutableSet set];
         BOOL checked = [g_msl_checked containsObject:found];
@@ -648,7 +625,7 @@ NSArray<NSString *> *totk_rt_known_variants(NSString *shader) {
 NSString *totk_rt_variant_cached(NSString *shader, NSDictionary *answers) {
     if (pthread_mutex_trylock(&g_rt_lock)) return nil;
     NSString *found = nil;
-    for (NSDictionary *v in variants_of(shader)) if (deps_match(v[@"deps"], answers)) { found = v[@"variant"]; break; }
+    for (NSDictionary *v in variants_of(shader)) if (totk_deps_match(v[@"deps"], answers)) { found = v[@"variant"]; break; }
     pthread_mutex_unlock(&g_rt_lock);
     return found;
 }

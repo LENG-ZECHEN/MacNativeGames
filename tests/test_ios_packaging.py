@@ -84,9 +84,10 @@ class ShaderPack(unittest.TestCase):
 
 
 class FullHD(unittest.TestCase):
-    """Settings › Full HD (docked): off by default, for both games. Tears of the Kingdom renders its scene at 1600x900
-    (1.4.3 renders 960x540 on the phone otherwise); Breath of the Wild's docked branch renders 1920x1080 and its
-    Settings pane says so (build_ipa.py)."""
+    """Settings › Full HD (docked): off by default on an iPhone, on by default on an iPad (DefaultValuePad, user
+    2026-11-01), for both games. Tears of the Kingdom renders its scene at 1600x900 (1.4.3 renders 960x540 on the phone
+    otherwise); Breath of the Wild's pane adds its docked scene row (build_ipa.py botw_pane): the Switch's 1600x900 by
+    default, or HD 1920x1080."""
     def test_switch_off_by_default_and_docked(self):
         import plistlib, re
         ios = TOOLS.parent
@@ -94,6 +95,7 @@ class FullHD(unittest.TestCase):
         switch = [s for s in specs if s.get('Key') == 'TOTK_DOCKED']
         self.assertEqual(len(switch), 1)
         self.assertIs(switch[0]['DefaultValue'], False)
+        self.assertIs(switch[0]['DefaultValuePad'], True)
         main = (ios/'Sources/main.m').read_text()
         # The switch is the pane's preset layer (main.m's apply_settings): it hands its own drawable and scene over
         # through settings_map.c's table, which is where the docked values live.
@@ -111,7 +113,7 @@ class FullHD(unittest.TestCase):
         self.assertIn('if ([d boolForKey:@"TOTK_CUSTOM_PICTURE"]) return;', body)
         self.assertIn('if (prenv.drawable) setenv("TOTK_IOS_DRAWABLE_H", prenv.drawable, 0);', body)
         self.assertEqual(main.count('totk_preset_env_build('), 1, 'the presets\' picture goes in one place')
-        # Both games have the switch: Breath of the Wild's docked branch renders 1920x1080 too (ad35dfa), so no
+        # Both games have the switch (Breath of the Wild's docked scene is its own row, TOTK_BOTW_SCENE), so no
         # game-specific exception is left in the helper. The only other operation-mode site is visionOS's default.
         self.assertNotIn('#ifndef GAME_BOTW', main)
         vision = 'setenv("TOTK_OPERATION_MODE","docked",1);'
@@ -123,6 +125,38 @@ class FullHD(unittest.TestCase):
         self.assertIn("s.get('Key')=='TOTK_DOCKED'", build)
         self.assertIn("specs[at-1]['FooterText']", build)
         self.assertNotIn('del specs[at-1:at+1]', build)
+
+    def test_seed_fingerprint_names_the_gpu(self):
+        # The pipelines' index (.tsv) is the same for every GPU: the fingerprint that decides whether the app's seed is
+        # copied again must take the pipelines-<arch>-* files themselves, or an iPhone build keeps an iPad's pipelines.
+        build = (TOOLS/'build_ipa.py').read_text()
+        self.assertIn("for p in sorted(seed.glob('pipelines-*')): fp.update(p.name.encode()", build)
+
+    def test_ipad_default_is_stored_and_used(self):
+        main = (TOOLS.parent/'Sources/main.m').read_text()
+        self.assertIn('item[@"DefaultValuePad"] && UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad', main)
+        self.assertIn('for (NSString *key in pad) if (!stored[key]) [d setObject:pad[key] forKey:key];', main)
+
+    def test_botw_pane_has_the_docked_scene_after_full_hd(self):
+        import plistlib
+        root = build_ipa.botw_pane(plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes()))
+        specs = root['PreferenceSpecifiers']
+        at = next(i for i, s in enumerate(specs) if s.get('Key') == 'TOTK_DOCKED')
+        row = specs[at+1]
+        self.assertEqual(row['Key'], 'TOTK_BOTW_SCENE')
+        self.assertEqual(row['Values'], ['1600x900', '1920x1080'])
+        self.assertEqual(row['DefaultValue'], '1600x900', 'the Switch\'s own docked scene by default')
+        self.assertTrue(row['TOTKPhone'])
+        # the runtime reads the same values, and the start screen's pick reaches it at game start
+        botw = (TOOLS.parents[1]/'runtime/game_patches_botw.c').read_text()
+        self.assertIn('getenv("TOTK_BOTW_SCENE"); return e && !strcmp(e, "1920x1080")', botw)
+        main = (TOOLS.parent/'Sources/main.m').read_text()
+        self.assertIn('setenv("TOTK_BOTW_SCENE", scene.UTF8String, 1);', main)
+        screen = (TOOLS.parent/'Sources/start_screen.m').read_text()
+        self.assertIn('settingsPaneHas:@"TOTK_BOTW_SCENE"', screen)
+        self.assertIn('forKey:@"TOTK_BOTW_SCENE"', screen)
+        totk = plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes())['PreferenceSpecifiers']
+        self.assertNotIn('TOTK_BOTW_SCENE', {s.get('Key') for s in totk}, 'Tears of the Kingdom has no such row')
 
     def test_botw_pane_drops_totk_only_rows(self):
         import plistlib

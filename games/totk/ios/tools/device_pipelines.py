@@ -21,7 +21,7 @@ the device builds it on its first start. Results are kept by the content of thei
 compiler (<cache>/<arch>/, <cache>/variant-libs/), so a build whose lists and shaders did not change compiles nothing again.
 Measured: BotW 1.6.0, 13,760 pipelines; metal-tt takes about 0.4 s per pipeline on an M4, run on every core.
 """
-import argparse, concurrent.futures, hashlib, json, os, shutil, subprocess, sys, tempfile
+import argparse, concurrent.futures, ctypes, errno, hashlib, json, os, shutil, subprocess, sys, tempfile
 from pathlib import Path
 from compile_seed import METAL_FLAGS
 
@@ -64,6 +64,33 @@ def connected_gpus(env):
     return found
 
 
+def seed_check(seed, arch):
+    """Whether a seed carries complete pipelines for the GPU architecture arch (2026-11-01: an iPhone was installed with
+    an iPad's, and filled its own archive for minutes on its first start). ('ok' | 'none' | 'wrong', a line to print):
+    none = pipelines for no GPU (built without a device on the cable; the first start fills them, as before 2026-10-29),
+    wrong = pipelines for other GPUs only, or this GPU's index, stamp and files do not agree."""
+    seed = Path(seed)
+    carried = sorted(p.name[len('pipelines-'):-len('.json')] for p in seed.glob('pipelines-*.json'))
+    if arch not in carried:
+        if not carried:
+            return 'none', (f'pipelines: the app carries none (built without an iPhone / iPad on the cable), so the first start on '
+                            f'this {arch} device builds them (about 10 minutes); build with it on the cable to have them made on the Mac')
+        return 'wrong', (f'pipelines: the app carries them for {", ".join(carried)}, not for this device\'s {arch}: its first start '
+                         f'would build them all (about 10 minutes); build again with this device on the cable')
+    try:
+        stamp = json.loads((seed/f'pipelines-{arch}.json').read_text())
+        rows = [l.split('\t') for l in (seed/f'pipelines-{arch}.tsv').read_text().splitlines() if l]
+    except (OSError, ValueError) as e:
+        return 'wrong', f'pipelines for {arch}: unreadable ({e})'
+    if stamp.get('arch') != arch or stamp.get('schema') != SCHEMA or stamp.get('pipelines') != len(rows):
+        return 'wrong', f'pipelines for {arch}: the stamp {stamp} does not match (schema {SCHEMA}, {len(rows)} rows)'
+    names = {r[1] for r in rows if len(r) == 2}
+    missing = sorted(n for n in names if not (seed/f'pipelines-{arch}-{n}.metalarchive').is_file())
+    if len(names) != len({r[1] for r in rows}) or missing:
+        return 'wrong', f'pipelines for {arch}: {len(missing)} of {len(names)} files missing (e.g. {missing[:1]})'
+    return 'ok', f'pipelines: the app carries {len(rows)} for this device\'s GPU ({arch}), made on the Mac'
+
+
 def tool(sdk, name, env):
     return subprocess.run(['xcrun', '-sdk', sdk, '-f', name], env=env, check=True, capture_output=True, text=True).stdout.strip()
 
@@ -82,8 +109,19 @@ def script_of(archive, sdk, scripts, env):
     return json.loads(kept.read_text())
 
 
+_clonefile = getattr(ctypes.CDLL(None, use_errno=True), 'clonefile', None)
+
+
 def place(src, dst):
-    if subprocess.run(['cp', '-c', str(src), str(dst)], capture_output=True).returncode: shutil.copyfile(src, dst)
+    """An APFS clone of src at dst (clonefile(2), what cp -c does), else a copy. In the process: a cp per file took 37 of
+    the 55 s a build spent when every pipeline of an iPhone was kept (2026-11-01, 15,038 files)."""
+    if _clonefile:
+        s, d = os.fsencode(src), os.fsencode(dst)
+        if _clonefile(s, d, 0) == 0: return
+        if ctypes.get_errno() == errno.EEXIST:
+            os.unlink(dst)
+            if _clonefile(s, d, 0) == 0: return
+    shutil.copyfile(src, dst)
 
 
 def variants(folder, seed, cache, sdk, env):

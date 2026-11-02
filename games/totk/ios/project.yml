@@ -22,6 +22,7 @@ targets:
       - path: ../third_party/d2r_gfx/gfx/tex
       - path: ../third_party/ns2pad/core/ns2_core.c          # a Switch 2 Pro Controller over Bluetooth LE
       - path: ../third_party/ns2pad/transport/apple/ns2pad_apple.m
+      - path: ../zeldaVR/gfx   # zeldaVR: the VR modules (empty on iOS; the build copies zeldaVR into the tree)
       - path: Gen/embed.S
       - path: ../runtime/loader.c
         compilerFlags: "-Dmain=totk_host_main"

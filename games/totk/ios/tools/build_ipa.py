@@ -5,15 +5,15 @@ shader list and the add-on content beside the RomFS)."""
 import argparse, json, os, plistlib, shutil, subprocess, sys, time
 from pathlib import Path
 from compile_seed import METAL_FLAGS
-from device_pipelines import connected_gpus
+from device_pipelines import connected_gpus, seed_check
 from xcode_dir import developer_dir
 import settings_strings
 
 def settings_without_totk(root):
     """The pane for Breath of the Wild, in place: every row Root.plist marks TOTKApp=totk (its picture modes and scene
     sizes, the custom picture tier, MetalFX, and the aspect-ratio row, whose key means ultrawide in Breath of the Wild),
-    and any group they leave empty. The Full HD switch stays: Breath of the Wild's docked branch renders the scene at
-    1920x1080, so the row is described for it in build_ipa.py. The mark sits on the row itself, so this list is not kept
+    and any group they leave empty. The Full HD switch stays: botw_pane describes it for Breath of the Wild and adds
+    its docked scene row. The mark sits on the row itself, so this list is not kept
     a second time here; tests/test_ios_packaging.py checks that every marked row is gone from the pane."""
     specs=[s for s in root['PreferenceSpecifiers'] if s.get('TOTKApp')!='totk']
     kept=[]
@@ -24,6 +24,34 @@ def settings_without_totk(root):
         kept.append(s)
     root['PreferenceSpecifiers']=kept
     return root
+
+def seed_fingerprint(seed, lists):
+    """What decides whether the app's seed is copied again (and pushed again by install_device.py): the manifest, the
+    lists, the variant libraries by name, and every pipelines-* file by name (the name carries the GPU) and content. The
+    pipelines' index (.tsv) is the same for every GPU, so with it alone an iPhone build kept the iPad's pipelines from the
+    build before and the iPhone filled its own archive on its first start (2026-11-01)."""
+    import hashlib
+    fp=hashlib.sha256(b''.join((d/n).read_bytes() for d,n in [(seed,'seed-manifest.json'),(seed,'shader_map.tsv'),
+                                (lists,'pso_list.tsv'),(lists,'pso_title.tsv')])
+                      +''.join(sorted(p.name for p in seed.glob('variant-*'))).encode())
+    for p in sorted(seed.glob('pipelines-*')): fp.update(p.name.encode()+b'\0'+hashlib.sha256(p.read_bytes()).digest())
+    return fp.hexdigest()
+
+def botw_pane(root):
+    """Breath of the Wild's pane, in place: the Full HD switch described for this game, its docked scene row right after
+    it (TOTK_BOTW_SCENE, game_patches_botw.c patch_render_phone: original is the Switch's 1600x900 scene upscaled into
+    the 1920x1080 canvas, HD the scene at 1920x1080; user 2026-11-01), then settings_without_totk."""
+    specs=root['PreferenceSpecifiers']
+    at=next(i for i,s in enumerate(specs) if s.get('Key')=='TOTK_DOCKED')
+    specs[at-1]['FooterText']=('開啟：遊戲的底座設定，輸出 1920×1080，畫面見下一行（原始 1600×900，和 Switch 底座一樣；高清 1920×1080，更清晰也更吃性能），'
+                               'iPad 預設開啟。關閉：手持 1280×720（內部 960×540），iPhone 預設。重新啟動遊戲後生效 · '
+                               'on: the game\'s docked settings, 1920×1080 output with the docked scene below (original: 1600×900, as the Switch '
+                               'docked; HD: 1920×1080, sharper and heavier), the iPad\'s default. Off: handheld 1280×720 (960×540 inside), '
+                               'the iPhone\'s default. Takes effect after relaunching the game')
+    specs.insert(at+1,{'Type':'PSMultiValueSpecifier','Key':'TOTK_BOTW_SCENE','TOTKPhone':True,'Title':'底座畫面 · Docked scene',
+                       'Titles':['原始 1600×900 · Original 1600×900','高清 1920×1080 · HD 1920×1080'],
+                       'Values':['1600x900','1920x1080'],'DefaultValue':'1600x900'})
+    return settings_without_totk(root)
 
 def run(args, cwd, log, env):
     log.parent.mkdir(parents=True,exist_ok=True)
@@ -124,14 +152,7 @@ def main():
     if botw:   # game_patches_botw.c instead of both Tears of the Kingdom files; GAME_BOTW for the runtime and the graphics layer
         project=project.replace('          - game_patches_botw.c','          - game_patches.c\n          - game_patches_v143.c')
         project=project.replace('-I../build\n','-I../build -DGAME_BOTW=1 -DGAME_'+a.version.upper()+'=1\n')
-        # The Settings pane with the Full HD switch described for this game: its docked scene is 1920x1080, not 1600x900.
-        # Then the rows Root.plist marks TOTKApp=totk leave (settings_without_totk above); the Full HD row is not one.
-        root=plistlib.loads((settings/'Root.plist').read_bytes()); specs=root['PreferenceSpecifiers']
-        at=next(i for i,s in enumerate(specs) if s.get('Key')=='TOTK_DOCKED')
-        specs[at-1]['FooterText']=('開啟：遊戲的底座設定，輸出和畫面都是 1920×1080，需要較快的 iPad（M 系列）。關閉：手持 1280×720（內部 960×540）。'
-                                   '重新啟動遊戲後生效 · on: the game\'s docked settings, 1920×1080 output and scene (for an M-series iPad). '
-                                   'Off: handheld 1280×720 (960×540 inside). Takes effect after relaunching the game')
-        root=settings_without_totk(root)
+        root=botw_pane(plistlib.loads((settings/'Root.plist').read_bytes()))
         (settings/'Root.plist').write_bytes(plistlib.dumps(root))
     elif a.version=='v143': project=project.replace('          - loader.c','          - loader.c\n          - game_patches.c')
     else: project=project.replace('          - loader.c','          - loader.c\n          - game_patches_v143.c')
@@ -273,15 +294,16 @@ def main():
                                       f"{r['failed']} failed) in {time.time()-t0:.0f} s; {done['library from source']} still use shaders the device compiles itself")
     # What the device reads: the seed and the two lists. With --image-outside it goes beside the app (<out>-shader-seed),
     # for install_device.py to put into Documents/GameData once per content (main.m); unchanged content is not copied again.
-    fingerprint=hashlib.sha256(b''.join((d/n).read_bytes() for d,n in [(seed,'seed-manifest.json'),(seed,'shader_map.tsv'),
-                                        (lists,'pso_list.tsv'),(lists,'pso_title.tsv')]+[(seed,f'pipelines-{g}.tsv') for g in gpus])
-                         +''.join(sorted(p.name for p in seed.glob('variant-*'))).encode()).hexdigest()
+    fingerprint=seed_fingerprint(seed,lists)
     seed_out=out.with_name(out.stem+'-shader-seed') if a.image_outside else res/'shader-seed'
     stamp=seed_out/'fingerprint.txt'
     if not (a.image_outside and stamp.is_file() and stamp.read_text().strip()==fingerprint):
         discard(seed_out); copy_tree(seed,seed_out)
         for n in ('pso_list.tsv','pso_title.tsv'): clone(lists/n,seed_out/n)
         stamp.write_text(fingerprint+'\n')
+    for g in gpus:   # what goes to the device carries each cabled GPU's pipelines (install_device.py checks it again)
+        state,line=seed_check(seed_out,g)
+        if state!='ok': raise RuntimeError(f'{seed_out}: {line}')
     if a.image_outside: print(f'shader seed: {seed_out} (install_device.py puts it into Documents once per content)')
     if out.suffix=='.app':   # the unsigned app as a folder, for install_device.py: no 100,000-file zip
         print(f'app ready: {out}; unsigned, install it with ios/tools/install_device.py'); return

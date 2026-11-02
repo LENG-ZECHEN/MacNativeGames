@@ -47,6 +47,12 @@ void runtime_setting_save(const char *n,const char *s,const char *w){(void)n;(vo
 int runtime_shared_setting_word(const char *n,char *s,size_t z){(void)n;(void)s;(void)z;return 0;}
 void runtime_shared_setting_save(const char *n,const char *s,const char *w){(void)n;(void)s;(void)w;}
 #endif
+/* runtime/account.c's local users (the panel's User page): the empty store of a fresh profile. */
+int runtime_users_get(RuntimeUser *out,int max){(void)out;(void)max;return 0;}
+int runtime_users_active(RuntimeUser *out){if(out)*out=(RuntimeUser){0};return 0;}
+int runtime_users_next(RuntimeUser *out){if(out)*out=(RuntimeUser){0};return 0;}
+int runtime_users_add(const char *name){(void)name;return -1;}
+int runtime_users_choose(int index){(void)index;return -1;}
 #ifndef FRONTEND_REAL_GAMEPAD
 int runtime_gamepad_type(int *detected){if(detected)*detected=-1;return 0;}
 #endif
@@ -57,6 +63,19 @@ int runtime_gamepad_battery_left_percent(void){return -1;}
 #ifndef FRONTEND_REAL_GAMEPAD
 int runtime_mouse_enabled(void){return 0;}
 #endif
+int vr_enabled(void){return 0;}int vr_streamer_managed(void){return 0;}void vr_resolution(int *w,int *h){*w=*h=0;}int vr_set_resolution(int w,int h){(void)w;(void)h;return 0;}
+int vr_first_person(void){return 0;}void vr_set_first_person(int on){(void)on;}
+int vr_offset_cm(int a){(void)a;return 0;}void vr_set_offset_cm(int a,int cm){(void)a;(void)cm;}
+int vr_mirror_mode(void){return 0;}void vr_set_mirror_mode(int on){(void)on;}void *vr_mirror_copy(void){return 0;}
+void vr_panel_image(const void *p,int w,int h,int s){(void)p;(void)w;(void)h;(void)s;}
+int vr_panel_in_headset(void){return 0;}
+void vr_mirror_crop(double o[4]){o[0]=o[1]=0;o[2]=o[3]=1;}
+double vr_mirror_aspect(void){return 2;}
+int vr_quest_view(void){return 0;}void vr_set_quest_view(int on){(void)on;}int vr_quest_zoom(void){return 2;}void vr_set_quest_zoom(int x){(void)x;}
+int vr_motion(void){return 0;}void vr_set_motion(int on){(void)on;}
+int vr_6dof(void){return 0;}void vr_set_6dof(int on){(void)on;}int vr_eye_spring_ms(void){return 0;}void vr_set_eye_spring_ms(int ms){(void)ms;}int vr_afr(void){return 0;}void vr_set_afr(int on){(void)on;}int vr_ipd_pct(void){return 100;}void vr_set_ipd_pct(int p){(void)p;}int vr_snap_ms(void){return 0;}void vr_set_snap_ms(int ms){(void)ms;}
+int runtime_camera_distance_available(void){return 0;}int runtime_camera_distance_cm(void){return 0;}void runtime_camera_distance_set(int cm){(void)cm;}
+int vr_hide_head_mode(void){return -1;}void vr_set_hide_head_mode(int m){(void)m;}
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_mouse_set_hook(void (*hook)(void)){(void)hook;}
 #endif
@@ -121,7 +140,8 @@ int runtime_mouse_sensitivity(void){return 50;}
 int runtime_mouse_sensitivity_locked(void){return 0;}
 void runtime_mouse_sensitivity_set(int sensitivity){(void)sensitivity;}
 #endif
-void nvn_fps_lock_set(int fps){(void)fps;}
+static int fixtureFrameLimit;
+void nvn_fps_lock_set(int fps){fixtureFrameLimit=fps;}
 /* TOTK_STATE_REPORTING (gfx/nvn/totk_state_report.m): frontend.m declares them weak, the linker still wants them. */
 void totk_sr_start(const char *game,const char *version){(void)game;(void)version;}
 void totk_sr_picture(int key,int visible){(void)key;(void)visible;}
@@ -129,7 +149,7 @@ void totk_sr_window(int key,int visible){(void)key;(void)visible;}
 void totk_sr_view(int w,int h,int hz,int fullscreen){(void)w;(void)h;(void)hz;(void)fullscreen;}
 void totk_sr_settings(int open){(void)open;}
 void totk_sr_closing(void){fprintf(stderr,"[probe] state report: closing\n");}
-int nvn_fps_lock(void){return 0;}
+int nvn_fps_lock(void){return fixtureFrameLimit;}
 /* The controller rows of the settings panel (PR #477, #523): the panel is not opened here. */
 int runtime_feedback_locked(int gyro){(void)gyro;return 0;}
 int runtime_feedback_present(int gyro){(void)gyro;return 0;}
@@ -166,6 +186,22 @@ int main(int argc,char **argv){
    NSTextField *field=[[NSTextField alloc] initWithFrame:NSMakeRect(10,10,200,25)];
    [window.contentView addSubview:field];[window makeFirstResponder:field];
    if(![window.firstResponder isKindOfClass:NSTextView.class])runtime_fail("text field has no editor");
+  }
+  if(mode==3){
+   NSMenu *app=NSApp.mainMenu.itemArray[0].submenu;
+   NSMenuItem *settings=app.itemArray[0];
+   if(![settings.keyEquivalent isEqualToString:@","]||settings.action!=@selector(openSettings:))runtime_fail("native settings menu missing");
+   [NSApp sendAction:settings.action to:settings.target from:settings];
+   if(!settingsOpen)runtime_fail("native settings action did not open panel");
+   settings_show(0);
+   NSMenu *view=NSApp.mainMenu.itemArray[1].submenu;
+   if(view.itemArray[0].action!=@selector(toggleFullscreen:) || (view.itemArray[0].keyEquivalentModifierMask!=(NSEventModifierFlagControl|NSEventModifierFlagCommand) && view.itemArray[0].keyEquivalentModifierMask!=NSEventModifierFlagFunction))runtime_fail("native full screen action missing");
+   NSMenu *rates=view.itemArray[1].submenu;
+   for(int i=0;i<2;i++)for(NSMenuItem *item in rates.itemArray)if(item.tag==(i?120:60)){
+    [NSApp sendAction:item.action to:item.target from:item];
+    if(nvn_fps_lock()!=(i?120:60))runtime_fail("native frame limit did not apply");
+   }
+   puts("PASS: native Settings, Full Screen and live 60-to-120 menu actions");return 0;
   }
   if([NSApp.mainMenu performKeyEquivalent:key(0)])runtime_fail("plain Q triggered Quit");
   if([NSApp.mainMenu performKeyEquivalent:key(NSEventModifierFlagControl)])runtime_fail("Control-Q triggered Quit");

@@ -11,6 +11,7 @@ secret gist and an issue that links it), without the browser. `install` runs `ch
 (build_app.py --platform ios installs it); `uninstall` removes it.
 
 usage: shader_contrib_watch.py check [--store <folder>] | install [--store <folder>] | uninstall"""
+import fcntl
 import json
 import os
 import plistlib
@@ -65,8 +66,48 @@ def contribution_game(text):
     return found[-1] if found else None
 
 
+ROWS = ('V\t', 'R\t', 'B\t', 'T\t')   # totk_shader_contrib.h totk_contrib_is_row: shaders and render pipelines
+
+
 def contribution_rows(text):
-    return len({line for line in text.splitlines() if line.startswith(('V\t', 'R\t', 'B\t'))})   # shaders and pipelines
+    return len({line for line in text.splitlines() if line.startswith(ROWS)})
+
+
+def side(path, ext):
+    """A hidden file beside the contribution file (totk_shader_contrib.h totk_contrib_side): .<name>.reminded / .done."""
+    return path.with_name(f'.{path.name}.{ext}')
+
+
+def locked(path, mode):
+    """The file opened and locked (flock), as the game's totk_contrib_lock: opened again when a retire replaced it meanwhile."""
+    for _ in range(8):
+        f = path.open(mode, encoding='utf-8')
+        fcntl.flock(f, fcntl.LOCK_EX)
+        held, now = os.fstat(f.fileno()), path.stat()
+        if (held.st_ino, held.st_dev) == (now.st_ino, now.st_dev):
+            return f
+        f.close()
+    raise OSError(f'{path} keeps being replaced')
+
+
+def retire(path, rows):
+    """Rows sent leave the file for its done file (totk_shader_contrib.h totk_contrib_retire): other lines stay in order,
+    the reminder's count comes down by the rows moved ("never" stays). Returns how many moved."""
+    with locked(path, 'r') as f:
+        lines = f.read().splitlines()
+        moved = list(dict.fromkeys(l for l in lines if l.startswith(ROWS) and l in rows))
+        if not moved:
+            return 0
+        with side(path, 'done').open('a') as done:
+            done.write(''.join(l + '\n' for l in moved))
+        tmp = side(path, 'tmp')
+        tmp.write_text(''.join(l + '\n' for l in lines if not (l.startswith(ROWS) and l in rows)))
+        os.replace(tmp, path)
+        state = side(path, 'reminded')
+        last = state.read_text() if state.exists() else None
+        if last is not None and not last.startswith('never'):
+            state.write_text(f'{max(0, int(last.strip() or 0) - len(moved))}\n')
+    return len(moved)
 
 
 def due(rows, reminded):
@@ -126,16 +167,20 @@ def issue_body(platform, link, game=None):
 
 
 def submit(gh, path, rows, platform, game=None):
-    """Sends the file with gh: a secret gist, then an issue linking its raw file. The issue's link, or None."""
+    """Sends the file with gh: a secret gist, then an issue linking its raw file; the rows sent then leave the file (retire).
+    The issue's link, or None."""
     try:
+        text = path.read_text(errors='replace')
         made = subprocess.run([gh, 'gist', 'create', '--filename', UPLOAD_NAME, '--desc', 'MacNativeGames shader list contribution', '-'],
-                              input=path.read_text(errors='replace'), capture_output=True, text=True, timeout=120)
+                              input=text, capture_output=True, text=True, timeout=120)
         link = gist_raw(made.stdout) if made.returncode == 0 else None
         if not link:
             return None
         issue = subprocess.run([gh, 'issue', 'create', '--repo', REPO, '--title', f'Shader list: {rows} shaders from {platform}' + (f' ({game})' if game else ''),
                                 '--body', issue_body(platform, link, game)], capture_output=True, text=True, timeout=120)
         found = re.search(r'https://github\.com/\S+/issues/\d+', issue.stdout) if issue.returncode == 0 else None
+        if found:
+            retire(path, {l for l in text.splitlines() if l.startswith(ROWS)})
         return found[0] if found else None
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -193,16 +238,18 @@ def devicectl(*args):
 
 
 def merge_rows(src, dst):
-    """The V / R / B rows of src that dst lacks, appended to dst (made with a header if missing); returns dst's row count."""
-    have = dst.read_text(errors='replace').splitlines() if dst.exists() else []
-    known = set(have)
-    new = [l for l in src.read_text(errors='replace').splitlines() if l.startswith(('V\t', 'R\t', 'B\t')) and l not in known]
+    """The rows of src that dst lacks, appended to dst (made with a header if missing), under dst's lock; a row of dst's done
+    file (sent, or served by the Mac's app) is not taken again. Returns dst's row count."""
     if not dst.exists():
         dst.write_text('# Shaders and render pipelines this Mac and its iPhones / iPads met that the shared shader list does not have yet\n'
                        '# (docs/shader-list.md). Only shader keys, bind states and pipeline descriptors: no game data or personal information.\n'
                        f'# Send it in a GitHub issue: {ISSUE_URL}\n')
-    if new:
-        with dst.open('a') as f: f.write(''.join(l + '\n' for l in dict.fromkeys(new)))
+    done = side(dst, 'done')
+    with locked(dst, 'r+') as f:
+        known = set(f.read().splitlines()) | (set(done.read_text(errors='replace').splitlines()) if done.exists() else set())
+        new = [l for l in src.read_text(errors='replace').splitlines() if l.startswith(ROWS) and l not in known]
+        if new:
+            f.seek(0, os.SEEK_END); f.write(''.join(l + '\n' for l in dict.fromkeys(new)))
     return contribution_rows(dst.read_text(errors='replace'))
 
 
@@ -211,7 +258,7 @@ def check():
     listing = devicectl('list', 'devices')
     for ident, udid, name, platform in reachable_devices(listing or {}):
         merged = STORE / MERGED
-        state = STORE / f'.{MERGED}.reminded'   # shared with the Mac launcher (totk_shader_contrib.h totk_contrib_state)
+        state = side(merged, 'reminded')   # shared with the Mac launcher (totk_shader_contrib.h totk_contrib_state)
         if reminded_at(state.read_text() if state.exists() else '') is None:
             continue   # the player chose "Don't remind me again" for this device
         stamp = WORK / f'{udid}.checked'

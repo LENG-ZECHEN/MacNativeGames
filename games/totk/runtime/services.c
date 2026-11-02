@@ -12,6 +12,7 @@
 #include "game_language.h"
 #include <string.h>
 #include <sys/mman.h>
+#include "output_memory.h"   /* HEAP_CAP / LOW_SIZE from the application pool */
 
 #include <time.h>
 #include <unistd.h>
@@ -46,20 +47,10 @@ static int dram_8gb(void){
  static int v=-1;if(v<0){const char *e=getenv("TOTK_DRAM_8GB");v=e&&*e&&strcmp(e,"0");}return v;
 #endif
 }
-/* The 8 GB mode's heap with a bigger output (1.4.3 native 4K: about +1.35 GiB in the texture heaps) is about 7.15 GiB,
-   past the 7 GiB cap: SetHeapSize failed (0xd401) in nninitStartup. So that mode's cap and region grow by the extra
-   texture-heap bytes (app_pool), rounded up to whole GiB. The retail layout's 4 GiB cap already has room. */
-static uint64_t heap_extra(void){
-#if TARGET_OS_IPHONE
- return 0;
-#else
- static uint64_t v=1;if(v==1)v=dram_8gb()?(runtime_output_res_extra_bytes()+(1ULL<<30)-1)&~((1ULL<<30)-1):0;return v;
-#endif
-}
 #if TARGET_OS_IPHONE
 #define LOW_SIZE (HEAP_OFF+HEAP_CAP)   /* iOS: no slack after the heap cap; address space is scarce */
 #else
-#define LOW_SIZE ((dram_8gb()?8ULL<<30:6ULL<<30)+heap_extra())   /* 8 GiB: room for the 8 GB mode's 7 GiB heap cap after the stack */
+#define LOW_SIZE output_low_size(dram_8gb()?8ULL<<30:6ULL<<30, HEAP_OFF, HEAP_CAP)   /* Preserve the old reservation unless the expanded heap needs more address space. */
 #endif
 #define STACK_OFF 0x10000000ULL
 #define STACK_SIZE 0x10000000ULL
@@ -80,7 +71,12 @@ static uint8_t user_exception_context[0x1000] __attribute__((aligned(0x1000)));
 #else
 #define GAME_PROGRAM_ID 0x0100f2c0115b6000ULL
 #endif
-#define HEAP_CAP ((dram_8gb()?7ULL<<30:4ULL<<30)+heap_extra())   /* 1.4.3 sets a 2.2 GiB heap during nninitStartup; ~5.8 GiB in the 8 GB mode */
+/* The heap region (GetInfo 5) holds at least the application pool (GetInfo 6): no heap can be bigger than all the
+   memory, and a pool the output / scene overlays grew (runtime_output_res_extra_bytes) needs its heap to grow with it -
+   the 8 GB mode with the scene at a 4K canvas broke nninitStartup at the fixed 7 GiB (PR #1470, after PR #1515). The
+   region is address space only (PROT_NONE until the game maps it), so no host memory size decides it; LOW_SIZE grows
+   with it. iOS grows no pool: its cap stays the retail one. */
+#define HEAP_CAP output_heap_capacity(dram_8gb()?7ULL<<30:4ULL<<30, APP_POOL)
 #define APP_POOL app_pool()
 static uint64_t app_pool(void){static uint64_t v;if(!v){const char *e=getenv("TOTK_APP_POOL");uint64_t extra=(runtime_output_res_extra_bytes()+0x1fffff)&~0x1fffffULL;
  v=e?strtoull(e,NULL,0):(dram_8gb()?0x1b3400000ULL:0xcd500000ULL)+extra;if(!e&&extra)fprintf(stderr,"[totk] application pool %#llx: +%llu MiB for the bigger texture heaps (TOTK_OUTPUT_RES, TOTK_RENDER_RES)\n",(unsigned long long)v,(unsigned long long)(extra>>20));}return v;}

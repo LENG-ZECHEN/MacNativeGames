@@ -30,7 +30,7 @@ class SettingsStrings(unittest.TestCase):
         self.check(plistlib.loads(ROOT.read_bytes()))
 
     def test_botw_pane(self):
-        root = build_ipa.settings_without_totk(plistlib.loads(ROOT.read_bytes()))
+        root = build_ipa.botw_pane(plistlib.loads(ROOT.read_bytes()))
         self.check(root)
 
     def test_written_bundle(self):

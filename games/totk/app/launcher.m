@@ -20,6 +20,7 @@
 #include <sys/event.h>
 #include <sys/file.h>
 #include <sys/proc.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include "dmsh_chain.h"   // DMSH_CHAIN: the shader translation chain the cache folder is named after
 #include "game_version.h"
@@ -269,8 +270,11 @@ static BOOL make_dir(NSString *path) {
 static NSString *game_data_in(NSString *folder, unsigned long long size, NSString *sha) {
     if (!folder.length) return nil;
     for (NSString *place in @[[folder stringByAppendingPathComponent:@TOTK_GAME_DIR], folder]) {
-        NSDictionary *image = [NSFileManager.defaultManager attributesOfItemAtPath:[place stringByAppendingPathComponent:@"romfs.bin"] error:nil];
-        if (!image || image.fileSize != size) continue;
+        /* Only the size is needed (every version). Foundation also queries extended attributes, which can block on a
+           large image on a removable volume before any UI (after PR #1473). */
+        struct stat image;
+        if (stat([place stringByAppendingPathComponent:@"romfs.bin"].fileSystemRepresentation, &image) ||
+            !S_ISREG(image.st_mode) || image.st_size < 0 || (uint64_t)image.st_size != size) continue;
         NSString *mark = [NSString stringWithContentsOfFile:[place stringByAppendingPathComponent:@"romfs.sha256"] encoding:NSUTF8StringEncoding error:nil];
         mark = [mark stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         if (!mark.length || [mark caseInsensitiveCompare:sha] == NSOrderedSame) return place;
@@ -546,12 +550,28 @@ int main(int argc, char **argv) {
         if ([commit isKindOfClass:NSString.class] && commit.length) setenv("TOTK_SOURCE_COMMIT", commit.UTF8String, 1);
         NSString *contrib = env_or("TOTK_SHADER_CONTRIB", contrib_file(data));
         setenv("TOTK_SHADER_CONTRIB", contrib.fileSystemRepresentation, 1);
+        { const char *seed = getenv("TOTK_SHADER_SEED_DIR");   // what this app serves leaves the file before the reminder counts it
+          NSString *build = [root stringByAppendingPathComponent:@"build"];
+          totk_contrib_prune(contrib, seed ? @(seed) : [build stringByAppendingPathComponent:@"shader-seed"], build); }
         contrib_reminder(contrib);
         unsetenv("TOTK_AUTOLOAD");   // the game starts at its title screen, as on the console
         /* runtime command channel (runtime/input.c): echo "shot ~/Desktop/shot.png" >> "<data>/input.txt" */
         { NSString *cmds = env_or("TOTK_INPUT_FILE", [data stringByAppendingPathComponent:@"input.txt"]);
           FILE *cf = fopen(cmds.fileSystemRepresentation, "w"); if (cf) fclose(cf);
           setenv("TOTK_INPUT_FILE", cmds.fileSystemRepresentation, 1); }
+        /* VR (stage 1, totk_vr.m): the control file of `basalt-streamer --wired --runtime <file>`, from
+           defaults write org.macnativegames.totk TOTK_VR_CONTROL <file> or the environment, which wins. */
+        { NSString *vr = [NSUserDefaults.standardUserDefaults stringForKey:@"TOTK_VR_CONTROL"];
+          if (vr.length) setenv("TOTK_VR_CONTROL", vr.fileSystemRepresentation, 0);
+          /* VR settings: the game runs the streamer (defaults TOTK_VR_STREAMER <basalt-streamer>) and keeps the per-eye
+             size picked in the settings panel in <data>/vr.txt */
+          NSString *st = [NSUserDefaults.standardUserDefaults stringForKey:@"TOTK_VR_STREAMER"];
+          if (st.length) setenv("TOTK_VR_STREAMER", st.fileSystemRepresentation, 0);
+          setenv("TOTK_VR_SETTINGS", [data stringByAppendingPathComponent:@"vr.txt"].fileSystemRepresentation, 0);
+          setenv("TOTK_CAMERA_SETTINGS", [data stringByAppendingPathComponent:@"camera.txt"].fileSystemRepresentation, 0);   /* third-person distance */
+          setenv("TOTK_HEAD_SETTINGS", [data stringByAppendingPathComponent:@"head.txt"].fileSystemRepresentation, 0);   /* Link's head shown / hidden */
+          setenv("TOTK_VR_OFFSET", [data stringByAppendingPathComponent:@"vr-offset.txt"].fileSystemRepresentation, 0);   /* the camera's offset (VR page) */
+          setenv("TOTK_VR_OPTIONS", [data stringByAppendingPathComponent:@"vr-options.txt"].fileSystemRepresentation, 0); }   /* the VR page's switches: Mac screen, 6DoF, snap turning */   /* the camera's offset (VR page) */   /* Link's head shown / hidden */
 
         /* The log is written only with debug on, as on the iPhone: defaults write org.macnativegames.totk TOTK_DEBUG_LOG
            -bool YES (org.macnativegames.botw for Breath of the Wild), or TOTK_DEBUG_LOG=1 in the environment, which wins

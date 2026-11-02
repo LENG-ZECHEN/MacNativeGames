@@ -120,5 +120,88 @@ class Devices(unittest.TestCase):
             self.assertEqual(device_pipelines.connected_gpus({}), [('phone', 'iPhone14,7', 'applegpu_g14p'), ('new', 'iPhone99,1', None)])
 
 
+def seed_with(root, arch, rows=('k1\ta', 'k2\ta', 'k3\tb'), files=('a', 'b'), stamp=None):
+    seed = Path(root)/'seed'; seed.mkdir(exist_ok=True)
+    (seed/f'pipelines-{arch}.tsv').write_text('\n'.join(rows) + '\n')
+    (seed/f'pipelines-{arch}.json').write_text(json.dumps(stamp or {'schema': device_pipelines.SCHEMA, 'chain': 'c', 'arch': arch, 'pipelines': len(rows)}))
+    for n in files: (seed/f'pipelines-{arch}-{n}.metalarchive').write_bytes(n.encode())
+    return seed
+
+
+class SeedCheck(unittest.TestCase):
+    """device_pipelines.seed_check, run at the end of build_ipa.py and before install_device.py signs (2026-11-01: an
+    iPhone was installed with an iPad's pipelines and built its own for minutes on its first start)."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_the_devices_own_gpu(self):
+        state, line = device_pipelines.seed_check(seed_with(self.root, 'applegpu_g14p'), 'applegpu_g14p')
+        self.assertEqual(state, 'ok', line)
+
+    def test_another_gpus_pipelines_only(self):
+        state, line = device_pipelines.seed_check(seed_with(self.root, 'applegpu_g15p'), 'applegpu_g14p')
+        self.assertEqual(state, 'wrong')
+        self.assertIn('applegpu_g15p', line)
+
+    def test_none_at_all(self):
+        (self.root/'seed').mkdir()
+        self.assertEqual(device_pipelines.seed_check(self.root/'seed', 'applegpu_g14p')[0], 'none')
+
+    def test_a_missing_file_or_a_stamp_that_disagrees(self):
+        self.assertEqual(device_pipelines.seed_check(seed_with(self.root, 'applegpu_g14p', files=('a',)), 'applegpu_g14p')[0], 'wrong')
+        with tempfile.TemporaryDirectory() as d:
+            seed = seed_with(d, 'applegpu_g14p', stamp={'schema': device_pipelines.SCHEMA, 'arch': 'applegpu_g14p', 'pipelines': 99})
+            self.assertEqual(device_pipelines.seed_check(seed, 'applegpu_g14p')[0], 'wrong')
+
+    def test_install_stops_on_another_gpus_pipelines(self):
+        import install_device
+        seed = seed_with(self.root, 'applegpu_g15p')
+        dev = {'hardwareProperties': {'platform': 'iOS', 'productType': 'iPhone14,7'}}
+        with redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                install_device.check_pipelines(dev, seed, False)
+            install_device.check_pipelines(dev, seed, True)   # --allow-device-fill
+            ipad = {'hardwareProperties': {'platform': 'iOS', 'productType': 'iPad15,7'}}
+            install_device.check_pipelines(ipad, seed, False)   # the iPad's own: fine
+
+    def test_build_stops_when_a_cabled_gpu_is_missing(self):
+        build = (TOOLS/'build_ipa.py').read_text()
+        self.assertIn("state,line=seed_check(seed_out,g)", build)
+        self.assertIn("if state!='ok': raise RuntimeError", build)
+
+
+class SeedFingerprint(unittest.TestCase):
+    """build_ipa.seed_fingerprint: the index is the same for every GPU, so the GPU must change the fingerprint."""
+    def test_another_gpu_changes_it(self):
+        import build_ipa
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); lists = root/'lists'; lists.mkdir()
+            for n in ('pso_list.tsv', 'pso_title.tsv'): (lists/n).write_text('x\n')
+            prints = []
+            for arch in ('applegpu_g15p', 'applegpu_g14p', 'applegpu_g14p'):
+                seed = root/arch/'seed'; seed.parent.mkdir(exist_ok=True)
+                seed = seed_with(seed.parent, arch)
+                (seed/'seed-manifest.json').write_text('{}'); (seed/'shader_map.tsv').write_text('m\n')
+                prints.append(build_ipa.seed_fingerprint(seed, lists))
+            self.assertNotEqual(prints[0], prints[1])
+            self.assertEqual(prints[1], prints[2])
+            (root/'applegpu_g14p/seed/pipelines-applegpu_g14p-a.metalarchive').write_bytes(b'recompiled')
+            self.assertNotEqual(build_ipa.seed_fingerprint(root/'applegpu_g14p/seed', lists), prints[1])
+
+
+class Place(unittest.TestCase):
+    def test_clones_and_replaces(self):
+        with tempfile.TemporaryDirectory() as d:
+            src, dst = Path(d)/'src', Path(d)/'dst'
+            src.write_bytes(b'new'); dst.write_bytes(b'old')
+            device_pipelines.place(src, dst)
+            self.assertEqual(dst.read_bytes(), b'new')
+            (Path(d)/'gone').unlink(missing_ok=True); device_pipelines.place(src, Path(d)/'gone')
+            self.assertEqual((Path(d)/'gone').read_bytes(), b'new')
+
+
 if __name__ == '__main__':
     unittest.main()

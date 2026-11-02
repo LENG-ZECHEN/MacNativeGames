@@ -13,6 +13,7 @@
 #include "game_version.h"   // GAME_FOLDER and TOTK_GAME_VERSION of this build (build_ipa.py's -D flags)
 #include "dmsh_chain.h"
 #include "settings_map.h"
+#include "totk_shader_contrib.h"   // totk_contrib_prune
 #import "touch_pad.h"
 #import "start_screen.h"
 
@@ -230,7 +231,8 @@ static NSDictionary *pref_row(NSDictionary *root, NSString *key) {
 }
 #endif
 /* Both layers hand their operation mode and frame pacing over through these two, so the overwrite policy exists once.
-   Breath of the Wild has the same switch since its docked branch renders the scene at 1920x1080 (ad35dfa). */
+   Breath of the Wild has the same switch; its docked scene is the pane's TOTK_BOTW_SCENE (the Switch's 1600x900 or HD
+   1920x1080, game_patches_botw.c patch_render_phone). */
 static void apply_operation_mode(const char *mode) {
     setenv("TOTK_OPERATION_MODE", mode, 1);
 }
@@ -257,6 +259,10 @@ static void apply_display_settings(void) {
     if (prenv.scene) setenv("TOTK_RENDER_RES", prenv.scene, 0);
     setenv("TOTK_MFX_OUTPUT", prenv.output_upscale, 0);
     apply_operation_mode(prenv.operation);
+    /* Breath of the Wild's docked scene (its pane's TOTK_BOTW_SCENE row; the start screen's 1080p original / HD), set
+       again here as the frame rate is, so the start screen's pick counts. Tears of the Kingdom's pane has no such row. */
+    NSString *scene = [d stringForKey:@"TOTK_BOTW_SCENE"];
+    if (scene) setenv("TOTK_BOTW_SCENE", scene.UTF8String, 1);
     // Frame rate: Settings.bundle › TOTK_PHONE_FPS, or the 60 / 30 button of the touch controls, which saves it here too.
     NSString *fps = [d stringForKey:@"TOTK_PHONE_FPS"] ?: @"60";
     totk_frame_env fe;
@@ -274,7 +280,7 @@ static void apply_settings(void) {
     NSBundle *settings = [NSBundle bundleWithPath:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"Settings.bundle"]];
     NSString *path = [settings pathForResource:@"Root" ofType:@"plist"];
     NSDictionary *root = path ? [NSDictionary dictionaryWithContentsOfFile:path] : nil;
-    NSMutableDictionary *defaults = [NSMutableDictionary dictionary];
+    NSMutableDictionary *defaults = [NSMutableDictionary dictionary], *pad = [NSMutableDictionary dictionary];
     for (NSDictionary *item in root[@"PreferenceSpecifiers"] ?: @[]) {
         NSString *key = item[@"Key"]; id value = item[@"DefaultValue"];
         if (!key.length || ![key hasPrefix:@"TOTK_"] || !value) continue;
@@ -285,6 +291,11 @@ static void apply_settings(void) {
            The mark sits on the row itself (Root.plist), so a new display row needs no second list here. */
         if ([item[@"TOTKPhone"] boolValue]) continue;
 #endif
+        /* DefaultValuePad: the row's default on an iPad (TOTK_DOCKED: the iPad starts docked with the Switch's 1080p
+           settings, the iPhone handheld at 720p; user 2026-11-01). */
+        if (item[@"DefaultValuePad"] && UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+            value = item[@"DefaultValuePad"]; pad[key] = value;
+        }
         defaults[key] = value;
     }
     /* A package without the pane is broken; do not keep a second, hand-copied copy of the defaults here. Each
@@ -293,6 +304,10 @@ static void apply_settings(void) {
     fprintf(stderr, "[totk] settings: %lu defaults from %s\n", (unsigned long)defaults.count, path.UTF8String ?: "no Settings.bundle");
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     [d registerDefaults:defaults];
+    /* The Settings app shows a row's DefaultValue until the player changes it, so an iPad default the player never
+       changed is stored once: the pane then shows what the game uses. */
+    NSDictionary *stored = [d persistentDomainForName:NSBundle.mainBundle.bundleIdentifier] ?: @{};
+    for (NSString *key in pad) if (!stored[key]) [d setObject:pad[key] forKey:key];
     /* One switch between the pane's layers (Root.plist, "Use custom settings"): the layer that is off is not handed
        over at all, so neither can overwrite the other. Which keys belong to which layer is settings_map.c's table. */
     BOOL custom = [d boolForKey:@"TOTK_CUSTOM_PICTURE"];
@@ -513,7 +528,10 @@ static void apply_settings(void) {
         if (removed) fprintf(stderr,"[shader-cache] removed %lu entries of earlier translation chains\n",(unsigned long)removed);
     });
     // Shaders the shared list lacks (totk_shader_contrib.h), in the Files app for players who want to send them; only the Mac asks.
-    setenv("TOTK_SHADER_CONTRIB",[docs stringByAppendingPathComponent:@"shader-list-contribution.txt"].fileSystemRepresentation,1);
+    // What this app's seed and warm lists (beside the seed: DM_NVN_SHMAP) serve leaves it first, so the Mac sends only the rest.
+    NSString *contrib = [docs stringByAppendingPathComponent:@"shader-list-contribution.txt"];
+    totk_contrib_prune(contrib, seedDir, seedDir);
+    setenv("TOTK_SHADER_CONTRIB",contrib.fileSystemRepresentation,1);
     // ... with the game and version it came from, so the Mac that sends it names them in the issue (shader_contrib_watch.py)
     setenv("TOTK_CONTRIB_GAME",GAME_FOLDER " " TOTK_GAME_VERSION,1);
     setenv("DM_NVN_SHMAP",[seedDir stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation,1);

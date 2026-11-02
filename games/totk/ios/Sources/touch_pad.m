@@ -1,4 +1,5 @@
 #import "touch_pad.h"
+#import "device_motion.h"
 #import <GameController/GameController.h>
 #include <math.h>
 #include <stdlib.h>
@@ -166,6 +167,7 @@ static void stick_axes(CGPoint from, CGPoint to, CGFloat radius, int32_t *x, int
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     (void)event; concealed = NO; [hideTimer invalidate]; hideTimer = nil;
+    totk_device_motion_note_touch();   // a finger on the screen takes the aiming from a controller's gyro (phone_motion.m)
     for (UITouch *t in touches) {
         CGPoint p = [t locationInView:self]; NSValue *v = [NSValue valueWithCGPoint:p]; [points setObject:v forKey:t];
         if ([self fpsButtonAt:p]) { [self switchFrameRate]; continue; }   // pressed no Npad button and moves no stick

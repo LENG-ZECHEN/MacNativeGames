@@ -37,7 +37,7 @@ V143 = (Option('picture', FILE, ('auto', 'metalfx', 'native-2k')),
         Option('smoothing', FILE, ('auto', 'on')),
         Option('ground', PLAY, ('auto', '16')),
         Option('aspect', FILE, ('auto', '21:9')))
-BOTW190 = (Option('picture', FILE, ('auto', 'metalfx')),
+BOTW190 = (Option('picture', FILE, ('auto', 'metalfx', 'native-2k')),   # native 2K since PR #440
            Option('interpolation', FILE, ('auto', 'interp30', 'interp', 'interpmax')),
            Option('smoothing', FILE, ('auto', 'on')),
            Option('ground', PLAY, ('auto', '16')))

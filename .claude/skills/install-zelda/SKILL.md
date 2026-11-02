@@ -89,7 +89,7 @@ python3.14 build_app.py "<botw base.nsp>" -k "<prod.keys>" --update "<1.9.0 upda
   --platform ios --ios-game-data documents -o "<folder>/Tears of the Kingdom.ipa"
 ```
 
-If `/Applications` is on another volume than the work folder, use a folder next to the work folder instead. Leaving out `--update` builds Tears of the Kingdom 1.0.0. Mods: `docs/mods.md`; Vision Pro: `docs/install.md` ("Apple Vision Pro"). Other games (Smash, Odyssey, …) are not built by `build_app.py`: see `games/<name>/README.md`.
+If `/Applications` is on another volume than the work folder, use a folder next to the work folder instead. Leaving out `--update` builds Tears of the Kingdom 1.0.0. Mods: `docs/mods.md`; Vision Pro: `docs/install.md` ("Apple Vision Pro"). Other games (Smash, Odyssey, …) are not built by `build_app.py`: see `games/<name>/README.md`; Red Alert 2 has its own skill (`.claude/skills/install-ra2/SKILL.md`).
 
 ## 4. Run it to the end
 
@@ -114,7 +114,7 @@ If `/Applications` is on another volume than the work folder, use a folder next 
 python3.14 games/totk/ios/tools/install_device.py "<the .ipa>" --device "<device name as in Finder>" --game-data "<work folder>/totk/extracted/<version>/romfs/romfs.bin"
 ```
 
-`<version>` is the folder that exists there (`v143` for Tears of the Kingdom 1.4.3; `ls "<work folder>/totk/extracted"`). The first install copies about 17 GB. A free Apple ID signs for 7 days: run the same command again to renew; saves are kept. On the device, trust the developer in Settings › General › VPN & Device Management if asked. The first start imports the shaders (about 3 minutes on an iPhone 14).
+`<version>` is the folder that exists there (`v143` for Tears of the Kingdom 1.4.3; `ls "<work folder>/totk/extracted"`). The first install copies about 17 GB, so the device must be on the cable: over Wi-Fi the script stops (`--wifi` forces it; about 2 minutes a GiB, and it drops). A free Apple ID signs for 7 days: run the same command again to renew; saves are kept. On the device, trust the developer in Settings › General › VPN & Device Management if asked. The first start imports the shaders (about 3 minutes on an iPhone 14).
 
 ## 6. When the build stops
 
@@ -141,6 +141,6 @@ If it is still stuck, help the player open an issue at <https://github.com/ly050
 
 ## 7. Later
 
-- After `git pull`, update the app without the game files: `python3.14 update_runtime.py "<the app>"` (about a minute). If it says the startup shaders no longer fit, add `--seed`.
+- Updating the Mac app: the settings panel (key 1) › **Update** shows the version and each newer commit; its **Update** button pulls the code, updates the app and opens it again. When it cannot (another branch, local changes, no access to the folder), it says why: then `git pull` and `python3.14 update_runtime.py "<the app>"` (about a minute; if it says the startup shaders no longer fit, add `--seed`).
 - Another game version or a mod: run `build_app.py` again with the same `-o`; it replaces the app and keeps the saves (it backs them up before the first start on a new version).
 - Saves: `~/Library/Application Support/MacNativeGames/TOTK/profile` (`BotW` for Breath of the Wild). The game log is off by default: `defaults write org.macnativegames.totk TOTK_DEBUG_LOG -bool YES` (`org.macnativegames.botw`), then `~/Library/Logs/MacNativeGames/totk.log` from the next start.

@@ -21,6 +21,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 
 FORMAT = 1
 BACKUP_JSON = 'backup.json'
@@ -267,19 +268,71 @@ def plan_restore(backup, target):
     return RestorePlan(tuple(write), tuple(same), kept, target.is_dir())
 
 
-def restore(backup, target):
-    """Write the backup's files over the target, then its folders. Nothing is removed. Returns
-    (RestorePlan, error)."""
-    plan = plan_restore(backup, target)
-    target = Path(target)
+def _reason(error):
+    """shutil errors are OSErrors too, but their strerror can be None."""
+    for message in (getattr(error, 'strerror', None), str(error)):
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    return type(error).__name__
+
+
+def _check_backup_file(directory, saved):
+    """Check one recorded file through one descriptor; never follow a final link or wait on a FIFO."""
     try:
+        for flag in ('O_NOFOLLOW', 'O_NONBLOCK'):
+            if not getattr(os, flag, None):
+                raise ValueError(f'safe backup validation requires {flag}')
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, 'O_CLOEXEC', 0)
+        fd = os.open(Path(directory) / saved.path, flags)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError('not a regular file')
+            if info.st_size != saved.size:
+                raise ValueError('size differs from manifest')
+            if saved.sha256 is not None:
+                digest = hashlib.sha256()
+                while block := os.read(fd, 1024 * 1024):
+                    digest.update(block)
+                if digest.hexdigest() != saved.sha256:
+                    raise ValueError('SHA-256 differs from manifest')
+        finally:
+            os.close(fd)
+    except (OSError, ValueError) as error:
+        return f'Backup file {saved.path!r}: {_reason(error)}'
+    return None
+
+
+def restore(backup, target):
+    """Check every recorded file before writing, then copy plan.write without removing extra files.
+    Hashless entries get type/size checks only. Files may change after preflight; linked ancestors
+    and destination links are not confined. Copy errors can leave a partially updated target.
+    Returns (RestorePlan, nonempty error or None); a planning error has an empty fallback plan.
+    """
+    plan = RestorePlan()
+    copying = False
+    copying_path = None
+    try:
+        target = Path(target)
+        plan = plan_restore(backup, target)
+        for saved in backup.files:              # check plan.same too; ignore unrecorded backup files
+            reason = _check_backup_file(backup.directory, saved)
+            if reason is not None:
+                return plan, reason
+        copying = True
         target.mkdir(parents=True, exist_ok=True)
         for saved in plan.write:
+            copying_path = saved.path
             src, dst = Path(backup.directory) / saved.path, target / saved.path
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
-    except (OSError, shutil.Error) as error:
-        return plan, error.strerror if isinstance(error, OSError) else str(error)
+    except (OSError, ValueError) as error:
+        reason = _reason(error)
+        if copying:
+            if copying_path is not None:
+                reason = f'Restore of {copying_path!r} failed: {reason}'
+            reason += '; destination may be partially updated'
+        return plan, reason
     return plan, None
 
 

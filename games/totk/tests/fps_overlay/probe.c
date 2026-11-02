@@ -99,6 +99,12 @@ int main(void) {
     fps_overlay_raster(&(fps_overlay_info){999, 99999, 99999, 1, 5000, 1, 99999, 99999}, FPS_OVERLAY_MAX_SCALE, px, &w, &h);   /* longest line: fits, or drops a scale */
     CHECK(w > 0 && w <= FPS_OVERLAY_TEX_W && h <= FPS_OVERLAY_TEX_H, "longest FPS line %dx%d outside the texture", w, h);
 
+    { char fl[96];
+      fps_overlay_text(&(fps_overlay_info){60, 3840, 2160, 0, 0, 2, 0, 0}, fl, sizeof fl);
+      CHECK(!strcmp(fl, "FPS 60  3840x2160  4K"), "native 4K label: %s", fl);
+      fps_overlay_text(&(fps_overlay_info){55, 5120, 2880, 0, 0, 3, 0, 0}, fl, sizeof fl);
+      CHECK(!strcmp(fl, "FPS 55  5120x2880  5K"), "native 5K label: %s", fl); }
+
     const int values[] = {-1, 0, 7, 30, 60, 120, 999, 5000};
     const int sizes[][2] = {{0, 0}, {1920, 1080}, {3440, 1440}, {99999, 99999}};
     for (size_t i = 0; i < sizeof values / sizeof values[0]; i++)

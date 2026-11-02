@@ -99,7 +99,9 @@ python3.14 build_app.py "<base 1.0.0.nsp>" -k "<prod.keys>" --update "<1.4.3 upd
 
 If `/Applications` is on another volume than the work folder, choose a folder on the work folder's volume instead.
 
-On a Mac with 16 GB of memory or more, a 1.4.3 build includes native 4K (the settings panel's 3840×2160 resolution); it reserves about 1.4 GiB more memory at every start. Add `--no-native-4k` to leave it out, or `--native-4k` to include it on a Mac with less memory.
+On a Mac with 16 GB of memory or more, a 1.4.3, 1.2.1 or Breath of the Wild build includes native 4K (the settings panel's 3840×2160 resolution); it reserves more memory at every start (about 1.4 GiB on Tears of the Kingdom, about 0.5 GiB on Breath of the Wild). Add `--no-native-4k` to leave it out, or `--native-4k` to include it on a Mac with less memory.
+
+Native 5K is opt-in on Mac, Tears of the Kingdom 1.4.3: add `--native-5k` to include a 5120×2880 canvas, UI and scene, plus the 4K modes. It reserves about 2.7 GiB more guest memory than the standard app at every start, even at a lower selected resolution. The virtual heap grows with that budget; physical pages are committed on demand. Existing builds keep their defaults. This does not enable HDR or guarantee 120 FPS.
 
 **4. Let it run to the end.** A fresh build takes **20–40 minutes** on an M-series Mac, longer on an 8 GB Mac:
 
@@ -168,7 +170,7 @@ python3.14 games/totk/ios/tools/install_device.py "<folder>/Tears of the Kingdom
 
 **3. First start:** about 15 s to check the game data, then about 3 minutes of shader import before the title (iPhone 14). Later starts take about 8 s.
 
-On the phone the game renders at 960×540, upscaled to 1280×720, at up to 60 fps. Breath of the Wild 1.6.0 builds and installs the same way.
+An iPhone starts handheld: the game renders at 960×540, upscaled to 1280×720, at up to 60 fps. An iPad starts docked at 1080p: the scene at 1600×900 as on the Switch, upscaled to 1920×1080 (the start screen and Settings › Full HD switch between them; Breath of the Wild also offers 1080p HD, the scene at 1920×1080). Breath of the Wild 1.6.0 builds and installs the same way.
 
 Two limits:
 - A phone cannot translate shaders while you play: objects whose shader variant the app does not carry are skipped, so a few things can be missing in places no player has reported yet.

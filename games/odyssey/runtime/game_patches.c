@@ -63,9 +63,7 @@ static uint32_t rt_pool_size(void) {
     unsigned w, h;
     if (!render_size(&w, &h, NULL) || (uint64_t)w * h <= 1920u * 1080u) return RT_POOL;
     /* 100 MiB holds a 2112x1188 scene and not 2176x1224, so the pool grows from that point with 8 % on top (2560x1440:
-       160 MiB, which ran the Wooded Kingdom). Growing more costs memory elsewhere: with 256 MiB (+156) loading the Wooded
-       Kingdom failed an allocation in another fixed heap and stopped with an SDK Break, also with the memory heap grown by
-       the same amount; +60 left enough. */
+       160 MiB, which ran the Wooded Kingdom). The arena and memory heap below must grow by the same amount. */
     uint64_t pool = (uint64_t)RT_POOL * w * h * 108 / (2112u * 1188u * 100u);
     if (pool < RT_POOL) pool = RT_POOL;
     return (uint32_t)((pool + 0xffffff) & ~0xffffffULL);   /* 16 MiB steps; a movz with lsl 16 holds it */
@@ -81,21 +79,26 @@ static void patch_rt_pool(Module *m) {
        an SDK Break; a bigger application pool alone did not change that. So it grows by the same amount, in the 2 MiB
        steps SetMemoryHeapSize takes. */
     uint32_t memheap = 0xc3000000u + ((pool - RT_POOL + 0x1fffffu) & ~0x1fffffu);
+    /* nnMain also passes a fixed 0xc0c00000 to the root arena (main+0x4bf700 -> 0x941160 -> 0x9436d0 ->
+       0x942da0 -> 0x955fa0 -> 0x9566a0). Growing SetMemoryHeapSize alone leaves this arena unchanged, so AglHeap
+       takes the extra render memory from the rest of the game. Keep the original 36 MiB outside the arena. */
+    uint32_t arena = 0xc0c00000u + (pool - RT_POOL);
     const struct { uint32_t off, shipped, value; } site[] = {
         {0x624b4c, 0x52a15400, 0x52a00000 | (heap >> 16) << 5 | 0},      /* mov w0, #heap */
         {0x624b7c, 0x52a0c808, 0x52a00000 | (pool >> 16) << 5 | 8},      /* mov w8, #pool */
         {0x4e321c, 0x52b86000, 0x52a00000 | (memheap >> 16) << 5 | 0},   /* mov w0, #memory heap size */
+        {0x4bf714, 0x52b81808, 0x52a00000 | (arena >> 16) << 5 | 8},     /* mov w8, #root arena size */
     };
-    for (size_t i = 0; i < 3; i++) {
+    for (size_t i = 0; i < sizeof site / sizeof *site; i++) {
         uint32_t word; memcpy(&word, m->base + site[i].off, 4);
         if (word != site[i].shipped) {
             fprintf(stderr, "[odyssey] render target pool main+%#x: found %08x expected %08x\n", site[i].off, word, site[i].shipped);
             runtime_fail("the render target pool size needs the instructions it replaces");
         }
     }
-    for (size_t i = 0; i < 3; i++) memcpy(m->base + site[i].off, &site[i].value, 4);
-    fprintf(stderr, "[odyssey] render target pool %u MiB (shipped 100), its heap %u MiB (shipped 170), memory heap %#x (shipped 0xc3000000)\n",
-            pool >> 20, heap >> 20, memheap);
+    for (size_t i = 0; i < sizeof site / sizeof *site; i++) memcpy(m->base + site[i].off, &site[i].value, 4);
+    fprintf(stderr, "[odyssey] render target pool %u MiB (shipped 100), its heap %u MiB (shipped 170), memory heap %#x (shipped 0xc3000000), root arena %#x (shipped 0xc0c00000)\n",
+            pool >> 20, heap >> 20, memheap, arena);
 }
 static void patch_render_res(Module *m) {
     const char *from; unsigned w, h;

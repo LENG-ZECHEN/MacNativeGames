@@ -59,11 +59,11 @@ class Drift(unittest.TestCase):
             self.assertIn(f'"{word}"', restore)
         self.assertIn('getenv("TOTK_PICTURE_MODE")', restore)
 
-    def test_botw_1_9_0_has_no_native_2k(self):
+    def test_botw_1_9_0_has_native_2k(self):
         code = source(RUNTIME / 'game_patches_botw.c')
-        self.assertIn('int runtime_output_res(unsigned *w, unsigned *h) { (void)w; (void)h; return 0; }', code)
+        self.assertIn('static int patch_output_res(Module *m) {   /* 1.9.0', code)   # PR #440: the swapchain and heaps at 2K
         picture = next(o for o in OPTIONS['botw190'] if o.id == 'picture')
-        self.assertEqual(picture.choices, ('auto', 'metalfx'))
+        self.assertEqual(picture.choices, ('auto', 'metalfx', 'native-2k'))
 
     def test_version_folders_are_the_runtimes(self):
         header = source(RUNTIME / 'game_version.h')

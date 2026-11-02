@@ -13,6 +13,7 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     NSTimer *_poll;
     BOOL _held, _done;       // a controller button or direction held since the last poll
     BOOL _hasPicture;        // the game's Settings pane has Full HD (docked): the picture row is shown
+    BOOL _hasScene;          // and a docked scene row (Breath of the Wild): 1080p comes as original and HD
     BOOL _pictureSet, _fpsSet;   // changed on this screen: only these are written back (not the values read at launch)
     UIStackView *_pictureRow, *_fpsRow;
     UILabel *_customInfo, *_note;
@@ -41,11 +42,16 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     title.text = name; title.font = [UIFont systemFontOfSize:34 weight:UIFontWeightBold]; title.textColor = UIColor.whiteColor;
     title.adjustsFontSizeToFitWidth = YES; title.minimumScaleFactor = 0.6;
 
-    _picture = [[UISegmentedControl alloc] initWithItems:@[T(@"720p（掌机）", @"720p (handheld)"), T(@"1080p（底座）", @"1080p (docked)")]];
+    /* Breath of the Wild's pane also has the docked scene (TOTK_BOTW_SCENE, build_ipa.py botw_pane): 1080p original is
+       the Switch's 1600x900 scene upscaled to 1920x1080, 1080p HD the scene at 1920x1080. */
+    _hasScene = [self settingsPaneHas:@"TOTK_BOTW_SCENE"];
+    _picture = _hasScene
+        ? [[UISegmentedControl alloc] initWithItems:@[T(@"720p（掌机）", @"720p (handheld)"), T(@"1080p 原始", @"1080p original"), T(@"1080p 高清", @"1080p HD")]]
+        : [[UISegmentedControl alloc] initWithItems:@[T(@"720p（掌机）", @"720p (handheld)"), T(@"1080p（底座）", @"1080p (docked)")]];
     _fps = [[UISegmentedControl alloc] initWithItems:@[@"30 fps", @"40 fps", @"60 fps"]];
     for (UISegmentedControl *s in @[_picture, _fps]) {
         s.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-        [s.widthAnchor constraintEqualToConstant:340].active = YES;
+        [s.widthAnchor constraintEqualToConstant:_hasScene && s == _picture ? 420 : 340].active = YES;   // three picture choices need the room
         [s addTarget:self action:@selector(picked:) forControlEvents:UIControlEventValueChanged];
     }
     _pictureRow = [self row:T(@"画面", @"Picture") control:_picture];
@@ -59,13 +65,12 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     [_customInfo.widthAnchor constraintLessThanOrEqualToConstant:520].active = YES;
 
     UILabel *note = [UILabel new]; _note = note;
-#ifdef GAME_BOTW
-    note.text = T(@"1080p：输出和画面都是 1920×1080，更清晰也更吃性能。设置也可以在“设置”App 里改。",
-                  @"1080p: 1920×1080 output and scene, sharper and heavier. The Settings app has these choices too.");
-#else   // Tears of the Kingdom's docked settings keep the scene at 1600x900 (main.m apply_display_settings)
-    note.text = T(@"1080p：输出 1920×1080，画面 1600×900，更清晰也更吃性能。设置也可以在“设置”App 里改。",
-                  @"1080p: 1920×1080 output with a 1600×900 scene, sharper and heavier. The Settings app has these choices too.");
-#endif
+    if (_hasScene)
+        note.text = T(@"1080p 原始：输出 1920×1080，画面 1600×900，和 Switch 底座一样。1080p 高清：画面也是 1920×1080，更清晰也更吃性能。设置也可以在“设置”App 里改。",
+                      @"1080p original: 1920×1080 output with a 1600×900 scene, as the Switch docked. 1080p HD: the scene at 1920×1080 too, sharper and heavier. The Settings app has these choices too.");
+    else   // Tears of the Kingdom's docked settings keep the scene at 1600x900 (main.m apply_display_settings)
+        note.text = T(@"1080p：输出 1920×1080，画面 1600×900，和 Switch 底座一样，更清晰也更吃性能。设置也可以在“设置”App 里改。",
+                      @"1080p: 1920×1080 output with a 1600×900 scene, as the Switch docked; sharper and heavier. The Settings app has these choices too.");
     note.font = [UIFont systemFontOfSize:13]; note.textColor = [UIColor colorWithWhite:0.6 alpha:1];
     note.numberOfLines = 0; note.textAlignment = NSTextAlignmentCenter;
     [note.widthAnchor constraintLessThanOrEqualToConstant:520].active = YES;
@@ -78,7 +83,10 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
         NSMutableDictionary *m = a.mutableCopy; m[NSFontAttributeName] = [UIFont systemFontOfSize:20 weight:UIFontWeightSemibold]; return m; };
     _start = [UIButton buttonWithConfiguration:cfg primaryAction:[UIAction actionWithHandler:^(UIAction *a) { (void)a; [self start]; }]];
 
-    NSArray<UIView *> *rows = @[icon, title, _pictureRow, _fpsRow, _customInfo, note, _start];
+    /* The icon only on an iPad: on an iPhone in landscape the rows did not fit with it (user 2026-11-01). */
+    NSMutableArray<UIView *> *rows = [NSMutableArray arrayWithObject:title];
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) [rows insertObject:icon atIndex:0];
+    [rows addObjectsFromArray:@[_pictureRow, _fpsRow, _customInfo, note, _start]];
     UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:rows];
     stack.axis = UILayoutConstraintAxisVertical; stack.alignment = UIStackViewAlignmentCenter; stack.spacing = 18;
     [stack setCustomSpacing:28 afterView:title]; [stack setCustomSpacing:26 afterView:note];
@@ -128,7 +136,7 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
 /* Show the settings as they are now; a row the player changed on this screen keeps the player's choice. */
 - (void)reload {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
-    if (!_pictureSet) _picture.selectedSegmentIndex = [d boolForKey:@"TOTK_DOCKED"] ? 1 : 0;
+    if (!_pictureSet) _picture.selectedSegmentIndex = ![d boolForKey:@"TOTK_DOCKED"] ? 0 : _hasScene && [[d stringForKey:@"TOTK_BOTW_SCENE"] isEqualToString:@"1920x1080"] ? 2 : 1;
     if (!_fpsSet) { NSString *f = [d stringForKey:@"TOTK_PHONE_FPS"]; _fps.selectedSegmentIndex = [f isEqualToString:@"30"] ? 0 : [f isEqualToString:@"40"] ? 1 : 2; }
     BOOL custom = [self custom];
     _pictureRow.hidden = custom || !_hasPicture;
@@ -158,7 +166,11 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
 /* Writes only what was changed on this screen, so a value set in the Settings app meanwhile is not put back. */
 - (void)changed {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
-    if (_pictureSet) [d setBool:_picture.selectedSegmentIndex == 1 forKey:@"TOTK_DOCKED"];
+    if (_pictureSet) {
+        [d setBool:_picture.selectedSegmentIndex >= 1 forKey:@"TOTK_DOCKED"];
+        if (_hasScene && _picture.selectedSegmentIndex >= 1)   // 720p keeps the docked scene the player chose last
+            [d setObject:_picture.selectedSegmentIndex == 2 ? @"1920x1080" : @"1600x900" forKey:@"TOTK_BOTW_SCENE"];
+    }
     if (_fpsSet) [d setObject:@[@"30", @"40", @"60"][(NSUInteger)MAX(0, MIN(2, _fps.selectedSegmentIndex))] forKey:@"TOTK_PHONE_FPS"];
 }
 
@@ -198,7 +210,7 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     else if (down) _row = MIN(2, _row + 1);
     else if ((left || right) && _row < 2) {
         UISegmentedControl *s = _row == 0 ? _picture : _fps;
-        s.selectedSegmentIndex = right ? 1 : 0;
+        s.selectedSegmentIndex = MAX(0, MIN((NSInteger)s.numberOfSegments - 1, s.selectedSegmentIndex + (right ? 1 : -1)));
         [self picked:s];
     } else if (confirm && _row == 2) { [self start]; return; }
     else if (confirm) _row = 2;

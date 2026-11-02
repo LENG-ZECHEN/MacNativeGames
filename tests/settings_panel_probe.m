@@ -19,6 +19,7 @@ void mfxup_output_set(int on);
 int mfxup_output_enabled(void);
 void settings_test_output_init(void);
 void settings_test_output_size(unsigned w, unsigned h);
+void settings_test_output_4k(int on);
 void settings_test_aspect_init(double view);
 void settings_test_aspect_frame(void);
 
@@ -69,6 +70,32 @@ void runtime_gamepad_background_set(int on) { fakePadBackground = !!on; }
 int runtime_gamepad_battery_left_percent(void) { return -1; }
 int runtime_mouse_set(int on) { return fakeMouse = !!on; }
 int runtime_mouse_enabled(void) { return fakeMouse; }
+int vr_enabled(void) { return 0; }   /* VR settings rows (zeldaVR): VR off in the probe */
+int vr_streamer_managed(void) { return 0; }
+void vr_resolution(int *w, int *h) { *w = *h = 0; }
+int vr_set_resolution(int w, int h) { (void)w; (void)h; return 0; }
+int vr_first_person(void) { return 0; }
+void vr_set_first_person(int on) { (void)on; }
+int vr_offset_cm(int axis) { (void)axis; return 0; }
+int vr_mirror_mode(void) { return 0; }
+int vr_quest_view(void) { return 0; }
+void vr_set_quest_view(int on) { (void)on; }
+int vr_quest_zoom(void) { return 2; }
+void vr_set_quest_zoom(int x) { (void)x; }
+int vr_6dof(void) { return 0; }
+int vr_motion(void) { return 0; }
+void vr_set_motion(int on) { (void)on; }
+void vr_panel_image(const void *p, int w, int h, int s) { (void)p; (void)w; (void)h; (void)s; }
+int vr_panel_in_headset(void) { return 0; }
+void vr_set_6dof(int on) { (void)on; }
+int vr_afr(void) { return 0; }
+void vr_set_afr(int on) { (void)on; }
+int vr_ipd_pct(void) { return 100; }
+void vr_set_ipd_pct(int pct) { (void)pct; }
+int vr_snap_ms(void) { return 0; }
+void vr_set_snap_ms(int ms) { (void)ms; }
+void vr_set_mirror_mode(int on) { (void)on; }
+void vr_set_offset_cm(int axis, int cm) { (void)axis; (void)cm; }
 void runtime_mouse_set_hook(void (*hook)(void)) { (void)hook; }
 void runtime_mouse_move(double dx, double dy) { (void)dx; (void)dy; }
 void runtime_mouse_button(int button, int down) { (void)button; (void)down; }
@@ -102,6 +129,25 @@ void runtime_setting_remove(const char *name) {
     const char *dir = getenv("SETTINGS_TEST_DIR"); if (!dir) return;
     char path[4096]; snprintf(path, sizeof path, "%s/%s", dir, name); unlink(path);
 }
+/* runtime/account.c's local users, in memory (the file store itself is tests/test_users.c). */
+static RuntimeUser fakeUsers[RUNTIME_USERS_MAX];
+static int fakeUsersCount, fakeUsersActive;
+int runtime_users_get(RuntimeUser *out, int max) {
+    int n = 0;
+    for (int i = 0; i < fakeUsersCount && n < max; i++) out[n++] = fakeUsers[i];
+    return n;
+}
+static const int fakeUsersRunning = 0;   /* the user this run opened with: choosing another does not change it */
+int runtime_users_active(RuntimeUser *out) { *out = fakeUsers[fakeUsersRunning]; return 0; }
+int runtime_users_next(RuntimeUser *out) { *out = fakeUsers[fakeUsersActive]; return 0; }   /* the next launch's */
+int runtime_users_add(const char *name) {
+    if (fakeUsersCount >= RUNTIME_USERS_MAX || !name || !*name) return -1;
+    RuntimeUser *u = &fakeUsers[fakeUsersCount];
+    snprintf(u->name, sizeof u->name, "%s", name);
+    arc4random_buf(&u->lo, sizeof u->lo); arc4random_buf(&u->hi, sizeof u->hi);
+    return fakeUsersCount++;
+}
+int runtime_users_choose(int index) { if (index < 0 || index >= fakeUsersCount) return -1; fakeUsersActive = index; return 0; }
 /* runtime/gamepad.m's controller layout and mouse sensitivity, kept here. */
 static uint16_t fakeMap[CONTROLLER_BUTTONS]; static uint8_t fakeModes[CONTROLLER_BUTTONS];
 void runtime_controller_map_get(uint16_t *map, uint8_t *modes) { memcpy(map, fakeMap, sizeof fakeMap); memcpy(modes, fakeModes, sizeof fakeModes); }
@@ -114,6 +160,8 @@ static int fakeSettingsShortcut = 1;   /* off while a controller button is being
 void runtime_gamepad_settings_enable(int on) { fakeSettingsShortcut = on; }
 static int fakeSettingsCapture;
 void runtime_gamepad_text_capture(int on) { fakeSettingsCapture = !!on; }
+/* The text bar's controller timer (the User page's add opens the bar here): a controller that is never connected. */
+void runtime_gamepad_text_read(RuntimeGamepadState *out) { *out = (RuntimeGamepadState){0}; }
 /* runtime/hid_feedback.c's and gamepad_feedback.m's rumble, strength and gyro switches without a controller. */
 static int fakeFeedback[2] = {1, 1}, fakeFeedbackLocked[2], fakeFeedbackPresent[2] = {1, 1}, fakeGainLocked;
 static float fakeGain = 1;
@@ -349,7 +397,7 @@ static void update_probe(void) {
     window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 720) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
     window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
     settings_show(1); assert(settingsOpen);
-    assert(settingsPanel.tabs.segmentCount == SETTINGS_PAGES && SETTINGS_PAGE_UPDATE == SETTINGS_PAGES - 1 && [[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_UPDATE] isEqualToString:@"Update"]);
+    assert(settingsPanel.tabs.segmentCount == settings_pages() && SETTINGS_PAGE_UPDATE == settings_pages() - 1 && [[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_UPDATE] isEqualToString:@"Update"]);
     for (TOTKSettingRow *r in settingsPanel.allRows) assert(r.page != SETTINGS_PAGE_UPDATE);
     assert(!spawned[0]);   /* nothing is asked before the page opens */
 
@@ -445,6 +493,10 @@ int main(int argc, const char **argv) { @autoreleasepool {
     if (argc==2 && !strcmp(argv[1],"frame")) { frame_probe(); return 0; }
     [NSApplication sharedApplication];
     controller_map_default(fakeMap, fakeModes); setenv("TOTK_UI_LANG", "en", 1); unsetenv("TOTK_SOURCE_COMMIT");
+    fakeUsersCount = 2; fakeUsersActive = 0;   /* the store the User page reads (tests/test_users.c covers the files) */
+    snprintf(fakeUsers[0].name, sizeof fakeUsers[0].name, "Local");
+    snprintf(fakeUsers[1].name, sizeof fakeUsers[1].name, "Zelda");
+    for (int i = 0; i < 2; i++) { arc4random_buf(&fakeUsers[i].lo, sizeof fakeUsers[i].lo); arc4random_buf(&fakeUsers[i].hi, sizeof fakeUsers[i].hi); }
     if (argc == 2 && !strcmp(argv[1], "update")) { update_probe(); puts("pass: update page"); return 0; }
     if (argc == 2) { persistence_probe(argv[1]); puts("pass: settings persistence"); return 0; }
     unsetenv("TOTK_MFX"); /* priority/disabled row covered by the headless frame probe */
@@ -461,11 +513,26 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 25 + TOTK_V143 + (totk_hdr_available()?1:0));   /* + the HDR / EDR row on the display page */   /* 17 (anisotropy last on the display page, controller
-                                                                 background input on the input page), then the effects
-                                                                 page: FOV, two distances, shadows, depth of field, FXAA,
-                                                                 sharpening and effect switches (1.4.3), or eight greyed
-                                                                 rows (Breath of the Wild 1.9.0's shadow resolution live) */
+    assert(settingsPanel.allRows.count == 27 + TOTK_V143 + (totk_hdr_available()?1:0));   /* + the HDR / EDR row on the display page */   /* 17 (anisotropy last on the display page, controller
+                                                                 background input on the input page), the user page's
+                                                                 two, then the effects page: FOV, two distances, shadows,
+                                                                 depth of field, FXAA, sharpening and effect switches
+                                                                 (1.4.3), or eight greyed rows (Breath of the Wild
+                                                                 1.9.0's shadow resolution live) */
+
+    /* Native 4K modes as game_patches.c serves them for 1.2.1 (the fixture swaps in a 4K swapchain); off again before
+       the rows below read the mode. */
+#ifndef GAME_BOTW
+    settings_test_output_4k(1);
+    assert(runtime_output_modes() & 1 << OUTPUT_MODE_NATIVE_4K);
+    unsigned nw4 = 0, nh4 = 0;
+    assert(runtime_output_native(OUTPUT_MODE_NATIVE_4K, &nw4, &nh4) && nw4 == 3840 && nh4 == 2160);
+    assert(runtime_output_native(OUTPUT_MODE_NATIVE, &nw4, &nh4) && nw4 == 2560 && nh4 == 1440);   /* native stays 2K */
+    assert(runtime_output_mode_set(OUTPUT_MODE_NATIVE_4K));
+    assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_4K);
+    assert(runtime_output_mode_set(OUTPUT_MODE_OFF) && runtime_output_mode() == OUTPUT_MODE_OFF);
+    settings_test_output_4k(0);
+#endif
     if(getenv("TEST_HDR_UNSUPPORTED")){
         assert(!totk_hdr_available() && !front_hdr_enabled());
         mfx_set(MFX_40);mfx_latch();assert(mfx_enabled()==MFX_40);
@@ -716,6 +783,65 @@ int main(int argc, const char **argv) { @autoreleasepool {
     press(18); fakeGainLocked = 1; press(18); assert(!menu(@"Rumble strength").enabled && [menu(@"Rumble strength").titleOfSelectedItem isEqualToString:@"3×"]);
     press(18); fakeFeedbackLocked[1] = 0; fakeFeedbackPresent[0] = 1; fakeFeedback[0] = 1; fakeGainLocked = 0; fakeGain = 1; press(18); assert(settingsOpen);
     assert(switched(@"Rumble") && menu(@"Rumble strength").enabled);
+
+    /* Users: the page shows the user this run opened with, and a pop-up for the next launch's user; the pick marks
+       the user and makes the row again; the footer button names a new user in the game's text bar — the panel closes
+       while the bar is up and comes back with the users read again. */
+    [settingsPanel selectPage:SETTINGS_PAGE_USERS];
+    assert(settingsPanel.rows.count == 2 && !row(@"User this run").control.enabled &&
+           [menu(@"User this run").titleOfSelectedItem isEqualToString:@"Local"]);
+    shows(@"User (from the next launch)", @"Local");
+    assert(settingsPanel.controllerTargets.count == 3);
+    {   /* The panel is as tall as its tallest page below the key bindings, the user page's two rows included. */
+        NSUInteger perPage[SETTINGS_PAGES] = {0};
+        for (TOTKSettingRow *r in settingsPanel.allRows) perPage[r.page]++;
+        NSUInteger tallest = 0;
+        for (NSInteger page = 0; page < SETTINGS_PAGE_BINDINGS; page++) if (perPage[page] > tallest) tallest = perPage[page];
+        assert(settingsPanel.frame.size.height >= SETTINGS_TOP + tallest * SETTINGS_ROW_H + SETTINGS_BOTTOM - 1);
+        assert(perPage[SETTINGS_PAGE_USERS] == 2);
+    }
+    NSButton *addUser = settingsPanel.userButtons[0];
+    assert([addUser.title isEqualToString:@"Add User…"] && !addUser.hidden);
+    pick(@"User (from the next launch)", @"Zelda");
+    /* the row is made again with Zelda marked (the remake is dispatched); a run loop pass can end before it is
+       served, so wait for it instead of counting passes */
+    for (int i = 0; i < 100 && [menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Local"]; i++) tick();
+    addUser = settingsPanel.userButtons[0];
+    assert(fakeUsersActive == 1 && settingsPanel.rows.count == 2 &&
+           [menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Zelda"]);
+    assert([menu(@"User this run").titleOfSelectedItem isEqualToString:@"Local"]);   /* this run keeps its user */
+    [addUser performClick:nil];
+    for (int i = 0; i < 100 && settingsOpen; i++) tick();   /* the text bar opens; the panel closed */
+    assert(!settingsOpen && settingsPanel.hidden);
+    runtime_front_text_test("type", "Link"); tick();
+    runtime_front_text_test("enter", "");
+    for (int i = 0; i < 100 && !settingsOpen; i++) tick();   /* the panel comes back, the user kept */
+    assert(settingsOpen && fakeUsersCount == 3 && !strcmp(fakeUsers[2].name, "Link"));
+    assert(menu(@"User (from the next launch)").numberOfItems == 3 &&
+           [menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Zelda"]);
+    addUser = settingsPanel.userButtons[0];
+    [addUser performClick:nil];
+    for (int i = 0; i < 100 && settingsOpen; i++) tick();
+    runtime_front_text_test("esc", "");   /* Escape answers the bar: nothing is added */
+    for (int i = 0; i < 100 && !settingsOpen; i++) tick();
+    assert(settingsOpen && fakeUsersCount == 3);
+    addUser = settingsPanel.userButtons[0];
+    while (fakeUsersCount < RUNTIME_USERS_MAX) assert(runtime_users_add("Filler") >= 0);
+    [addUser performClick:nil];
+    for (int i = 0; i < 100 && settingsOpen; i++) tick();   /* the console is full: the bar still asks, the user is not kept */
+    runtime_front_text_test("type", "Extra"); tick();
+    runtime_front_text_test("enter", "");
+    for (int i = 0; i < 100 && !settingsOpen; i++) tick();
+    assert(settingsOpen && fakeUsersCount == RUNTIME_USERS_MAX);
+    assert([settingsPanel.versionLabel.stringValue containsString:@"At most 8 users"]);
+    while (fakeUsersCount > 2) fakeUsersCount--;   /* the two the next checks name */
+    pick(@"User (from the next launch)", @"Local");
+    for (int i = 0; i < 100 && ![menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Local"]; i++) tick();
+    assert(fakeUsersActive == 0 && [menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Local"]);
+
+    /* Key bindings and the Update page follow the user page in the tabs, so the checks below start on the input page again. */
+    [settingsPanel selectPage:SETTINGS_PAGE_INPUT]; tick();
+
     /* A short window (32:9 on a laptop screen): the rows close up, so the title, the close button and the first row stay in it. */
     NSSize was = window.contentView.bounds.size; press(18); [window setContentSize:NSMakeSize(1728, 486)]; press(18); assert(settingsOpen);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
@@ -731,7 +857,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     for (unsigned k = 19; k <= 26; k++) if (k != 24 && k != 25) press(k);
     assert(mfx_requested() == interp && runtime_aspect_ratio() == shape && !settingsOpen && !taa_enabled() && !fakeMouse);
 
-    /* Pages: Display, Input and Key bindings; the page shown last opens again. */
+    /* Pages: Display, Input, User and Key bindings; the page shown last opens again. */
     press(18); assert(settingsOpen);
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY];
     assert(settingsPanel.rows.count == 6 && [settingsPanel.rows[0].title isEqualToString:@"Overlay"]);   /* edge smoothing, AO and anisotropy are on the effects page */
@@ -928,6 +1054,9 @@ int main(int argc, const char **argv) { @autoreleasepool {
     /* Chinese. */
     setenv("TOTK_UI_LANG", "zh", 1); press(18); assert(settingsOpen);
     shows(@"分辨率", @"1080p"); shows(@"手柄类型", @"自动（未接手柄）");
+    assert([row(@"本次运行的用户").control isKindOfClass:[NSPopUpButton class]]);
+    shows(@"用户（下次启动生效）", @"Local");
+    assert([settingsPanel.userButtons[0].title isEqualToString:@"添加用户…"]);
 #ifdef GAME_BOTW160
     shows(@"DualSense 拉弓扳机", @"这个版本没有"); assert(!menu(@"DualSense 拉弓扳机").enabled);
 #else
@@ -943,6 +1072,6 @@ int main(int argc, const char **argv) { @autoreleasepool {
         assert([[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:@(argv[1]) atomically:YES]);
     }
     [settingsPanel.timer invalidate];
-    puts("pass: settings panel (key 1 / Esc, overlay, frame lock, interpolation, resolution 1080p / MetalFX / 2K / 4K and window size, aspect 16:9 / 16:10 / 21:9 / 32:9, aspect ratio, switches, controller type, rumble / rumble strength / gyro aiming, game keys blocked while open, keys 2-7 inert, Chinese)");
+    puts("pass: settings panel (key 1 / Esc, overlay, frame lock, interpolation, resolution 1080p / MetalFX / 2K / 4K and window size, aspect 16:9 / 16:10 / 21:9 / 32:9, aspect ratio, switches, controller type, rumble / rumble strength / gyro aiming, users: this run, next launch, added through the text bar, full console, game keys blocked while open, keys 2-7 inert, Chinese)");
     return 0;
 }}

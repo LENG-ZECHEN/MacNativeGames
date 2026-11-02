@@ -4,7 +4,6 @@
  "Language": "Langue",
  "Follow system language": "Langue du système",
  "Display": "Affichage",
- "on: the game's docked settings, 1920×1080 output, 1600×900 inside (for a fast iPad). Off: handheld 1280×720 (960×540 inside). Takes effect after relaunching the game": "activé : réglages du mode TV du jeu, sortie 1920×1080, 1600×900 en interne (pour un iPad rapide). Désactivé : mode portable 1280×720 (960×540 en interne). Prend effet au prochain lancement du jeu",
  "Full HD (docked)": "Full HD (mode TV)",
  "Aspect ratio": "Format d'image",
  "independent of the presets and the custom layer; applies in both. Takes effect after relaunching": "indépendant des préréglages et des réglages personnalisés ; s'applique dans les deux cas. Prend effet au prochain lancement",
@@ -16,7 +15,6 @@
  "Up to 60": "Jusqu'à 60",
  "Held at 30": "Bloqué à 30",
  "Touch controls": "Commandes tactiles",
- "uses the phone's gyro and haptic actuator with no controller connected; a connected controller takes over. Takes effect after relaunching the game": "utilise le gyroscope et le moteur haptique du téléphone quand aucune manette n'est connectée ; une manette connectée prend le relais. Prend effet au prochain lancement du jeu",
  "Phone gyro": "Gyroscope du téléphone",
  "Phone haptics": "Vibrations du téléphone",
  "Controller": "Manette",
@@ -66,5 +64,10 @@
  "Debug": "Débogage",
  "writes Documents/log.txt for reading on a Mac (slightly slower); off records nothing. Takes effect after relaunching the game": "écrit Documents/log.txt, à lire sur un Mac (un peu plus lent) ; désactivé, rien n'est enregistré. Prend effet au prochain lancement du jeu",
  "Debug log": "Journal de débogage",
- "on: the game's docked settings, 1920×1080 output and scene (for an M-series iPad). Off: handheld 1280×720 (960×540 inside). Takes effect after relaunching the game": "activé : réglages du mode TV du jeu, sortie et scène en 1920×1080 (pour un iPad à puce M). Désactivé : mode portable 1280×720 (960×540 en interne). Prend effet au prochain lancement du jeu"
+ "uses the phone's gyro and haptic actuator when no controller is connected, or the controller has no gyro; a controller with motion takes the aiming over until the screen is touched (its sticks or buttons take it back). Takes effect after relaunching the game": "utilise le gyroscope et le moteur haptique du téléphone quand aucune manette n'est connectée, ou que la manette n'a pas de gyroscope ; une manette avec gyroscope prend la visée jusqu'à ce que l'écran soit touché (ses sticks ou ses boutons la reprennent). Prend effet au prochain lancement du jeu",
+ "on: the game's docked settings, 1920×1080 output, 1600×900 inside (as the Switch docked), the iPad's default. Off: handheld 1280×720 (960×540 inside), the iPhone's default. Takes effect after relaunching the game": "activé : réglages du mode TV du jeu, sortie 1920×1080, 1600×900 en interne (comme la Switch sur sa station), par défaut sur iPad. Désactivé : mode portable 1280×720 (960×540 en interne), par défaut sur iPhone. Prend effet au prochain lancement du jeu",
+ "on: the game's docked settings, 1920×1080 output with the docked scene below (original: 1600×900, as the Switch docked; HD: 1920×1080, sharper and heavier), the iPad's default. Off: handheld 1280×720 (960×540 inside), the iPhone's default. Takes effect after relaunching the game": "activé : réglages du mode TV du jeu, sortie 1920×1080 avec la scène TV ci-dessous (original : 1600×900, comme la Switch sur sa station ; HD : 1920×1080, plus net et plus exigeant), par défaut sur iPad. Désactivé : mode portable 1280×720 (960×540 en interne), par défaut sur iPhone. Prend effet au prochain lancement du jeu",
+ "Docked scene": "Scène en mode TV",
+ "Original 1600×900": "Original 1600×900",
+ "HD 1920×1080": "HD 1920×1080"
 }

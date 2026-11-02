@@ -98,8 +98,22 @@ iPad never asks during play: while it is connected to the Mac that built its app
 is `shader-list-contribution-botw.txt`). One file for the Mac and every device, since the list does not tell platforms
 apart; the folder opens in Finder with each reminder, which comes every 100 new rows in that file. "Remind me next time" waits for the next 100;
 "Don't remind me again" stops the reminders for good (the file is still kept). "Send" opens the [shader list contribution](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml)
-issue form; drag the file into it. Later reminders come at 200, 300 and so on, so sending the whole file each time
-is fine: rows the list already has are skipped. The game never uploads anything by itself.
+issue form; drag the file into it. The game never uploads anything by itself.
+
+The file holds only what still has to be sent (2026-11-01; before, every issue carried the whole file, and of one
+day's 158 issues 83% of the Tears of the Kingdom shader rows and 99% of the pipeline rows were already in the list):
+
+- **Rows the app serves leave it.** Before the Mac launcher counts the file for its reminder, and before an iPhone or
+  iPad starts the game, rows the app's own seed and warm lists already serve move out (`totk_contrib_prune`): a `V`
+  row whose bind state a seed variant serves (picked as the runtime picks one), an `R` / `B` / `T` row the warm lists
+  hold. They were written by an older app, or another player's file brought them into the list since. A shader of
+  another game version, and a pipeline the build names otherwise (0.6%), stay. This runs once per app build.
+- **Rows sent automatically leave it.** After "Submit automatically" (the launcher, the settings panel or
+  `shader_contrib_watch.py`) has made the issue, the rows it sent move out too, so the next issue carries only what came
+  after and the reminder counts from there.
+- Both go to a hidden `.shader-list-contribution.txt.done` beside the file. The game and `shader_contrib_watch.py` treat
+  its rows as ones they have, so neither writes them again. A file dragged into the issue form by hand is not known to
+  be sent; it leaves the file when the next build's list has it.
 
 ## Breath of the Wild
 

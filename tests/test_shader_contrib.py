@@ -43,6 +43,9 @@ class ContributionFileTests(unittest.TestCase):
             self.assertEqual(game.returncode, 0, game.stderr)
             self.assertEqual(json.loads(game.stdout)['status'], 'pass')
             self.assertEqual(watch.contribution_game(contrib.read_text()), 'TOTK 1.4.3')
+            prune = subprocess.run([str(probe), str(contrib), 'prune'], capture_output=True, text=True)   # served and sent rows leave
+            self.assertEqual(prune.returncode, 0, prune.stderr)
+            self.assertEqual(json.loads(prune.stdout)['status'], 'pass')
 
 
 if __name__ == '__main__':
@@ -272,6 +275,30 @@ class MacReminderForDevicesTests(unittest.TestCase):
             fresh = d / 'new.txt'
             self.assertEqual(watch.merge_rows(phone, fresh), 3)
             self.assertTrue(fresh.read_text().startswith('# '))
+
+    def test_rows_sent_or_served_are_not_merged_again(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); phone, mine = d / 'phone.txt', d / 'shader-list-contribution.txt'
+            done = d / '.shader-list-contribution.txt.done'   # totk_shader_contrib.h totk_contrib_side(path, "done")
+            mine.write_text('# Mac\nR\tab\n')
+            done.write_text('R\tcd\n')
+            phone.write_text('# phone\nR\tcd\nT\tef\t1:0;\nV\t' + 'a' * 64 + '\t{}\n')
+            self.assertEqual(watch.merge_rows(phone, mine), 3)      # ab, the T row and the V row; cd was sent
+            self.assertNotIn('R\tcd', mine.read_text())
+
+    def test_a_sent_file_keeps_only_what_came_after(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); mine = d / 'shader-list-contribution.txt'
+            done, state = d / '.shader-list-contribution.txt.done', d / '.shader-list-contribution.txt.reminded'
+            mine.write_text('# Mac\n# Game: TOTK 1.4.3\nR\tab\nR\tcd\nT\tef\t1:0;\n')
+            state.write_text('3\n')
+            self.assertEqual(watch.retire(mine, {'R\tab', 'T\tef\t1:0;'}), 2)
+            self.assertEqual(mine.read_text(), '# Mac\n# Game: TOTK 1.4.3\nR\tcd\n')
+            self.assertEqual(set(done.read_text().splitlines()), {'R\tab', 'T\tef\t1:0;'})
+            self.assertEqual(state.read_text(), '1\n')                # the reminder counts from the row left
+            state.write_text('never\n')
+            watch.retire(mine, {'R\tcd'})
+            self.assertEqual(state.read_text(), 'never\n')
 
     def test_agent_runs_check_every_ten_minutes_with_the_xcode(self):
         plist = watch.agent_plist('/usr/bin/python3', Path('/x/shader_contrib_watch.py'), '/X/Xcode.app/Contents/Developer')

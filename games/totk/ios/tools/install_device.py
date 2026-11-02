@@ -178,6 +178,18 @@ def write_pack(seed, names, d, folder, size, done):
     write((0).to_bytes(2, 'little'))
     out.close(); done(d/f'{folder}.pack.{part:03d}')
 
+def check_pipelines(dev, seed, allow):
+    """The app's pipelines against the device's GPU (device_pipelines.seed_check): stops on pipelines for other GPUs only
+    (an iPhone got an iPad's on 2026-11-01 and filled its own for minutes), unless allow; says so when there are none."""
+    if dev['hardwareProperties'].get('platform') != 'iOS' or not Path(seed).is_dir(): return
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from device_pipelines import GPU_BY_PRODUCT, seed_check
+    product = dev['hardwareProperties'].get('productType', '?'); arch = GPU_BY_PRODUCT.get(product)
+    if not arch: print(f'pipelines: {product} is not in device_pipelines.py GPU_BY_PRODUCT; not checked'); return
+    state, line = seed_check(seed, arch)
+    print(line if state != 'none' else 'warning: ' + line)
+    if state == 'wrong' and not allow: sys.exit(line + ' (or pass --allow-device-fill)')
+
 def seed_beside(ipa, app):
     """The startup shaders build_ipa.py --image-outside leaves beside the IPA or .app (<name>-shader-seed), when the app
     carries none of its own: an .ipa (the README's install) as well as an unsigned .app folder. None otherwise."""
@@ -238,6 +250,7 @@ def main():
     ap.add_argument('--team', help='Apple team ID (default: the only team with an Apple Development certificate)')
     ap.add_argument('--bundle-id', help='default: the build\'s identifier (org.macnativegames.totk or .botw) + .<team>, so it is free to register on your team')
     ap.add_argument('--game-data', type=Path, help='romfs.bin (index.json beside it) for an IPA built with --ios-game-data documents')
+    ap.add_argument('--allow-device-fill', action='store_true', help='install although the app carries pipelines for other GPUs only (the first start then builds them on the device)')
     ap.add_argument('--wifi', action='store_true', help='install on an iPhone / iPad that is not on the cable (slow; 14 GiB of game data over Wi-Fi took about 2 minutes per GiB and dropped)')
     a = ap.parse_args()
     team = a.team or (lambda t: t[0] if len(t) == 1 else sys.exit(
@@ -280,6 +293,8 @@ def main():
     entfile = work/'entitlements.plist'
     entfile.write_bytes(plistlib.dumps({k: ents[k] for k in ('application-identifier','com.apple.developer.team-identifier',
                                                                 'get-task-allow', ENTITLEMENT) if k in ents}))
+    # Before the slow part: the shaders this install pushes carry this device's pipelines (device_pipelines.seed_check)
+    check_pipelines(dev, seed_beside(a.ipa, app) or app/'GameData/shader-seed', a.allow_device_fill)
     print('signing (a few minutes: every game file is hashed)')
     run(['codesign','--force','--sign',identity_of(signed),'--entitlements',entfile,'--generate-entitlement-der',app])
     print('installing over Wi-Fi' if dev['hardwareProperties'].get('platform') == 'visionOS' else 'installing (a few minutes over the cable)')
