@@ -34,6 +34,7 @@ CLASSES
 static struct { uint64_t tex[6][128], samp[6][128]; } S;
 static _Atomic int g_border_custom_any = 1;
 static _Atomic uint64_t g_reg_gen = 1;
+static uint64_t g_samp_gen = 1, g_bk_hits, g_bk_misses;   /* declared elsewhere in nvn_mtl.m (the sampler generation and the replay stats) */
 static samp_par g_sreg[4]; static int g_sreg_ok[4], g_nsreg=4;
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static int registry_lock(void) { return pthread_mutex_lock(&mutex); }
@@ -46,7 +47,7 @@ static NSString *key_for(NvShader *sh, int stage) {
     return border_key(sh,stage,c,a,x,p,&n);
 }
 static void registration(int id, samp_par p, int valid) {
-    registry_lock(); g_sreg[id]=p; g_sreg_ok[id]=valid; g_reg_gen++; registry_unlock();
+    registry_lock(); g_sreg[id]=p; g_sreg_ok[id]=valid; g_reg_gen++; g_samp_gen++; registry_unlock();   /* as mtl_reg_samp */
 }
 static void *replace_sampler(void *unused) {
     (void)unused;
