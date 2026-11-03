@@ -9681,18 +9681,23 @@ static uint64_t vr_palette_patch(const uint8_t *src, uint64_t size) {   // 0: no
     static int said; if (!said) { said = 1; MLOG("[vr] the head bone scaled to nothing (bone %ld of the head mesh, joint %.2f m): the neck closed", g_vr_head_bone, j); }
     return gpu;
 }
-static uint64_t ui_mat_patch(const p_bind_buf *u, void *mb, uint64_t mo) {
+/* The copy holds the bytes this draw reads: the submit-time snapshot with this submission's pending writes over it
+   (pend_materialize), not memory as it is now. Before (iPhone, 2026-11-03: the map jumped while zooming), it read memory
+   - the game may already hold the next frame's matrix there - and a binding with an inline update (upd_shadow) skipped
+   the patch: that draw's viewport was widened by 1 / g_ui_xs with the matrix not narrowed, so the map came out too wide
+   for a frame. fresh: such writes exist; the copy is then not reused. */
+static uint64_t ui_mat_patch(const p_bind_buf *u, void *mb, uint64_t mo, int fresh) {
     enum { RING = 4 << 20 }; static __strong id<MTLBuffer> ring; static uint64_t ring_gpu, la, ls, lp, lg; static size_t at; static double lo;
     if (!ring) { ring = [g_dev newBufferWithLength:RING options:MTLResourceStorageModeShared]; res_add(ring); ring_gpu = ring.gpuAddress; }
     static double lx = 1;
-    if (la == u->addr && ls == u->size && lp == g_pass.serial && lo == g_ui_moff && lx == g_ui_xs) return lg;
-    const uint8_t *src = [(__bridge id<MTLBuffer>)mb contents]; if (!src || u->size < 64 || u->size > 4096) return 0;
+    if (!fresh && la == u->addr && ls == u->size && lp == g_pass.serial && lo == g_ui_moff && lx == g_ui_xs) return lg;
+    (void)mb; (void)mo; if (u->size < 64 || u->size > 4096) return 0;
     size_t n = (u->size + 255) & ~(size_t)255; if (at + n > RING) at = 0;
-    uint8_t *dst = (uint8_t *)ring.contents + at; memcpy(dst, src + mo, u->size);
+    uint8_t *dst = (uint8_t *)ring.contents + at; pend_materialize(u->addr, dst, (size_t)u->size, 0);
     float m[16], o = (float)g_ui_moff; memcpy(m, dst, 64); m[1] += o * m[3]; m[5] += o * m[7]; m[9] += o * m[11]; m[13] += o * m[15];
     for (int k = 0; k < 4; k++) m[k] *= (float)g_ui_xs;
     memcpy(dst, m, 64);
-    la = u->addr; ls = u->size; lp = g_pass.serial; lo = g_ui_moff; lx = g_ui_xs; lg = ring_gpu + at; at += n;
+    la = fresh ? 0 : u->addr; ls = u->size; lp = g_pass.serial; lo = g_ui_moff; lx = g_ui_xs; lg = ring_gpu + at; at += n;
     return lg;
 }
 /* TOTK_NAN_TRACE: g_nt_watch is the texture the traced shader read in its watched slot (see nt_watch_after_pass). */
@@ -9917,8 +9922,8 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             if (!u || !u->addr || !mtl_gpu_addr(u->addr, 1, &mb, &mo, &gpu)) { RED_ONCE(16, "阶段 %d cb%d 没有绑定 uniform 缓冲", nvn_stage, reg); continue; }
             use_rec("buf", u->addr, u->size, 0, NULL);
             uint64_t ren = g_nupd ? upd_shadow(u->addr, u->size) : 0;   // TOTK: renamed inline updates (see upd_shadow)
-            if (ren) { gpu = ren; if (nvn_stage == 0 && reg == 0 && ui_mat_on()) RED_ONCE(58, "UI 矩阵修补读的是内存，跳过了含内联更新的 uniform 副本"); }
-            else if (nvn_stage == 0 && reg == 0 && ui_mat_on()) { uint64_t pg = ui_mat_patch(u, mb, mo); if (pg) gpu = pg; }
+            if (nvn_stage == 0 && reg == 0 && ui_mat_on()) { uint64_t pg = ui_mat_patch(u, mb, mo, ren || pend_hits(u->addr, u->size)); if (pg) gpu = pg; else if (ren) gpu = ren; }   // the inline updates included (ui_mat_patch)
+            else if (ren) gpu = ren;
             else { const usnap_t *sc = usnap_find(u->addr, u->size ? u->size : 1); if (sc) gpu = sc->gpu + (u->addr - sc->lo); }   // TOTK: contents as of the submit call
             if (g_vr_collapse_draw && nvn_stage == 0 && reg == 2 && u->size <= 48 * 256) {   // zeldaVR: bones scaled to nothing, from the contents this draw reads (inline updates too)
                 static uint8_t pal[48 * 256]; pend_materialize(u->addr, pal, (size_t)u->size, 0);
