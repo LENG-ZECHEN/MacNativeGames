@@ -13611,6 +13611,12 @@ static void totk_uw_wide_ui(NvProg *pr, const p_draw *dw, const p_draw_idx *di, 
         if (world) map_frame = fr;
         else if (map_frame == fr && cover >= 2) chrome_frame = fr;
         int map_on = map_frame && map_frame + 2 >= fr, markers = map_frame == fr && chrome_frame != fr;   // between the map and its frame
+        /* On the map screen a full-screen quad sampling a 16:9 picture the game rendered (fs 2ab857c8 at 1280x720, b1bfde16 at
+           640x360, seven frames at a time while the map zooms or loads) is the map's own interface drawn offscreen, where
+           nothing is squeezed: kept as a backdrop it showed the map, its markers and the side panel unsqueezed for those
+           frames (iPhone, 2026-11-03: the map "jumped" while moving). It is squeezed like the interface it holds. The
+           backdrops of the menus (the blurred scene behind the wheels and the inventory) are not on the map screen. */
+        if (map_on && !world && kept && cover == 1 && ui_samples_scene_picture()) kept = 0;
         *map_screen = map_on;
         g_uw_phase = !map_on ? 0 : world ? 1 : markers ? 2 : 3;
         if (!world && !kept && cover == 0 && map_on && !markers) {
