@@ -13633,8 +13633,14 @@ static void totk_uw_wide_ui(NvProg *pr, const p_draw *dw, const p_draw_idx *di, 
         if (seq_frame != fr) { seq_frame = fr; seq0 = 0; }
         g_uw_seq = seq0++;   // the draw's place among this frame's squeezed UI draws (catalogue)
         if (world) map_frame = fr;
-        else if (map_frame == fr && cover >= 2) chrome_frame = fr;
+        /* Only the frame's own pieces start it: a full-height side strip (2, 3) or a full-width bar (4). A marker or label
+           whose quad merely starts at the screen's side (5, 6: x0 near -1 or x1 near 1, part of the height) used to start
+           it too: on the map panned left / right, one icon at the left edge (2026-11-03, the 46th of ~950 draws) made the
+           ~300 markers after it "frame", each in a side quarter pinned against the screen edge - the markers jumped for
+           that frame (moving up / down never put one there). */
+        else if (map_frame == fr && cover >= 2 && cover <= 4) chrome_frame = fr;
         int map_on = map_frame && map_frame + 2 >= fr, markers = map_frame == fr && chrome_frame != fr;   // between the map and its frame
+        if (markers && (cover == 5 || cover == 6)) edge = 0;   // a marker at the screen's side: squeezed like the others
         /* On the map screen a full-screen quad sampling a 16:9 picture the game rendered (fs 2ab857c8 at 1280x720, b1bfde16 at
            640x360, seven frames at a time while the map zooms or loads) is the map's own interface drawn offscreen, where
            nothing is squeezed: kept as a backdrop it showed the map, its markers and the side panel unsqueezed for those
