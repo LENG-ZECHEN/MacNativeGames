@@ -5108,7 +5108,31 @@ static int uw_ui_vs(const char *vs) {
     return 0;
 }
 /* The squeeze for this draw (totk_ui_squeeze.h): *ux narrows it, *uy flattens it, both 1 when not UI or at 16:9. */
+/* Per frame (diagnostic, always on, one line only for a bad frame): UI-shaped draws, how many were on the learned canvas
+   with the UI begun, how many came out squeezed. A frame with many and none squeezed is the whole interface shown
+   unsqueezed (iPhone, 2026-11-03: the map "jumped" for a frame while moving); mtl_present names the reason. */
+static int g_uwf_ui, g_uwf_on, g_uwf_sq, g_uwf_begun; static uint64_t g_uwf_rt, g_uwf_rt_w, g_uwf_rt_h;
+static void uw_ui_squeeze_body(const char *vs, const p_draw *dw, const p_draw_idx *di, NSUInteger tw, NSUInteger th, double *ux, double *uy);
 static void uw_ui_squeeze(const char *vs, const p_draw *dw, const p_draw_idx *di, NSUInteger tw, NSUInteger th, double *ux, double *uy) {
+    uw_ui_squeeze_body(vs, dw, di, tw, th, ux, uy);
+    if (!vs || UW_NOT_UI_DRAW(vs, dw, di)) return;
+    g_uwf_ui++; g_uwf_begun += g_uw_ui != 0;
+    if (uw_on_canvas()) g_uwf_on++;
+    else if (R.rt.n > 0 && R.rt.color[0]) { g_uwf_rt = R.rt.color[0]->serial; g_uwf_rt_w = tw; g_uwf_rt_h = th; }
+    if (*ux != 1 || *uy != 1) g_uwf_sq++;
+}
+static void uw_frame_check(void) {
+    if (g_uwf_ui >= 20 && g_uwf_sq == 0 && uw_ratio() > 0) {
+        static int lines; static uint64_t bad;
+        bad++;
+        if (lines < 300) { lines++;
+            MLOG("[uw-frame] F%llu: %d UI draws, none squeezed (on the canvas %d, after the UI began %d); canvas %llu (%ux%u), last other target %llu (%llux%llu); bad frames so far %llu",
+                 (unsigned long long)atomic_load(&g_cur_frame), g_uwf_ui, g_uwf_on, g_uwf_begun, (unsigned long long)g_mfx.canvas, g_mfx.swap_w, g_mfx.swap_h,
+                 (unsigned long long)g_uwf_rt, (unsigned long long)g_uwf_rt_w, (unsigned long long)g_uwf_rt_h, (unsigned long long)bad); }
+    }
+    g_uwf_ui = g_uwf_on = g_uwf_sq = g_uwf_begun = 0; g_uwf_rt = 0;
+}
+static void uw_ui_squeeze_body(const char *vs, const p_draw *dw, const p_draw_idx *di, NSUInteger tw, NSUInteger th, double *ux, double *uy) {
     *ux = *uy = 1;
     /* TOTK_UI_SQUEEZE=0: the UI layouts themselves are laid out for the wide canvas (scripts/ultrawide_layout.py, the
        launcher's ultrawide resolution), so nothing is squeezed here. */
@@ -16839,6 +16863,7 @@ static int mfx_present_frame(const tex_t *t, double period, int discard) {
 }
 uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     hdr_note_swap(t);
+    uw_frame_check();   // the frame's UI squeeze, logged only when the whole interface went unsqueezed
     taa_frame_end();   // TOTK_TAA: next frame's jitter, this frame's depth and camera forgotten (also while off: key 5)
     if (g_vr_framelog > 0) {
         static uint64_t d0; static uint32_t c0; char fm[600]; const uint32_t c = g_vr_headlook ? __atomic_load_n(&g_vr_headlook->calls, __ATOMIC_RELAXED) : 0;
