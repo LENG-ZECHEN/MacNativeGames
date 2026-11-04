@@ -123,6 +123,14 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
 #else
     __weak TOTKGameController *weak = self;
     void (^start)(void) = ^{
+        NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+        const char *testProfile = getenv("TOTK_TEST_PROFILE");
+        NSString *folder = @"save";
+        if (testProfile && !strcmp(testProfile, "1")) folder = @"save-test";
+        else if ([[NSUserDefaults.standardUserDefaults stringForKey:@"TOTK_SAVE_PROFILE"] isEqualToString:@"personal"] &&
+                 [NSFileManager.defaultManager fileExistsAtPath:[docs stringByAppendingPathComponent:@"save-personal/sync-ready.txt"]]) folder = @"save-personal";
+        setenv("TOTK_PROFILE_DIR", [docs stringByAppendingPathComponent:folder].fileSystemRepresentation, 1);
+        fprintf(stderr, "[totk] save profile: %s\n", folder.UTF8String);
         apply_display_settings();
         runtime_ios_sync_drawable(weak.gameView);   // the drawable follows the chosen picture (TOTK_IOS_DRAWABLE_H)
         [weak boot];

@@ -7,9 +7,9 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
 
 @implementation TOTKStartView {
     void (^_onStart)(void);
-    UISegmentedControl *_picture, *_fps;
+    UISegmentedControl *_picture, *_fps, *_save;
     UIButton *_start;
-    NSInteger _row;          // 0 picture, 1 frame rate, 2 start (controller focus)
+    NSInteger _row;          // -1 save, 0 picture, 1 frame rate, 2 start (controller focus)
     NSTimer *_poll;
     BOOL _held, _done;       // a controller button or direction held since the last poll
     BOOL _hasPicture;        // the game's Settings pane has Full HD (docked): the picture row is shown
@@ -54,6 +54,14 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
         [s.widthAnchor constraintEqualToConstant:_hasScene && s == _picture ? 420 : 340].active = YES;   // three picture choices need the room
         [s addTarget:self action:@selector(picked:) forControlEvents:UIControlEventValueChanged];
     }
+    _save = [[UISegmentedControl alloc] initWithItems:@[T(@"我的存档", @"My save"), T(@"100% 存档", @"100% save")]];
+    _save.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    [_save.widthAnchor constraintEqualToConstant:340].active = YES;
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    BOOL ready = [NSFileManager.defaultManager fileExistsAtPath:[docs stringByAppendingPathComponent:@"save-personal/sync-ready.txt"]];
+    [_save setEnabled:ready forSegmentAtIndex:0];
+    _save.selectedSegmentIndex = ready && [[d stringForKey:@"TOTK_SAVE_PROFILE"] isEqualToString:@"personal"] ? 0 : 1;
+    [_save addTarget:self action:@selector(savePicked:) forControlEvents:UIControlEventValueChanged];
     _pictureRow = [self row:T(@"画面", @"Picture") control:_picture];
     _fpsRow = [self row:T(@"帧率", @"Frame rate") control:_fps];
     _hasPicture = [self settingsPaneHas:@"TOTK_DOCKED"];
@@ -86,10 +94,10 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     /* The icon only on an iPad: on an iPhone in landscape the rows did not fit with it (user 2026-11-01). */
     NSMutableArray<UIView *> *rows = [NSMutableArray arrayWithObject:title];
     if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) [rows insertObject:icon atIndex:0];
-    [rows addObjectsFromArray:@[_pictureRow, _fpsRow, _customInfo, note, _start]];
+    [rows addObjectsFromArray:@[[self row:T(@"存档", @"Save") control:_save], _pictureRow, _fpsRow, _customInfo, note, _start]];
     UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:rows];
-    stack.axis = UILayoutConstraintAxisVertical; stack.alignment = UIStackViewAlignmentCenter; stack.spacing = 18;
-    [stack setCustomSpacing:28 afterView:title]; [stack setCustomSpacing:26 afterView:note];
+    stack.axis = UILayoutConstraintAxisVertical; stack.alignment = UIStackViewAlignmentCenter; stack.spacing = 12;
+    [stack setCustomSpacing:16 afterView:title]; [stack setCustomSpacing:16 afterView:note];
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [self addSubview:stack];
     [NSLayoutConstraint activateConstraints:@[[stack.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
@@ -156,7 +164,13 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     [self focus];
 }
 
-- (NSInteger)firstRow { return [self custom] ? 2 : _hasPicture ? 0 : 1; }
+- (NSInteger)firstRow { return -1; }
+- (void)savePicked:(UISegmentedControl *)control {
+    [NSUserDefaults.standardUserDefaults setObject:control.selectedSegmentIndex == 0 ? @"personal" : @"complete" forKey:@"TOTK_SAVE_PROFILE"];
+}
+- (BOOL)visibleRow:(NSInteger)row {
+    return row == -1 || row == 2 || (row == 0 && !_pictureRow.hidden) || (row == 1 && !_fpsRow.hidden);
+}
 
 - (void)picked:(UISegmentedControl *)control {
     if (control == _picture) _pictureSet = YES; else _fpsSet = YES;
@@ -180,6 +194,7 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     [_poll invalidate]; _poll = nil;
     if (_foreground) { [NSNotificationCenter.defaultCenter removeObserver:_foreground]; _foreground = nil; }
     [self changed];
+    [self savePicked:_save];
     void (^go)(void) = _onStart; _onStart = nil;
     [UIView animateWithDuration:0.25 animations:^{ self.alpha = 0; } completion:^(BOOL f) { (void)f; [self removeFromSuperview]; }];
     if (go) go();
@@ -187,11 +202,11 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
 
 /* The controller's focus: a ring around the row it moves. */
 - (void)focus {
-    NSArray<UIView *> *rows = @[_picture, _fps, _start];   // _row 0 is never focused without the picture row
+    NSArray<UIView *> *rows = @[_save, _picture, _fps, _start];   // _row 0 is never focused without the picture row
     for (NSUInteger i = 0; i < rows.count; i++) {
-        rows[i].layer.borderWidth = (NSInteger)i == _row ? 2 : 0;
+        rows[i].layer.borderWidth = (NSInteger)i - 1 == _row ? 2 : 0;
         rows[i].layer.borderColor = [UIColor colorWithRed:0.10 green:0.63 blue:1.0 alpha:1].CGColor;
-        rows[i].layer.cornerRadius = i == 2 ? 26 : 9;
+        rows[i].layer.cornerRadius = i == 3 ? 26 : 9;
     }
 }
 
@@ -206,12 +221,17 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     if (!any) { _held = NO; return; }
     if (_held) return;
     _held = YES;
-    if (up) _row = MAX([self firstRow], _row - 1);
-    else if (down) _row = MIN(2, _row + 1);
+    if (up || down) {
+        NSInteger next = _row;
+        do { next += down ? 1 : -1; } while (next >= -1 && next <= 2 && ![self visibleRow:next]);
+        if (next >= -1 && next <= 2) _row = next;
+    }
     else if ((left || right) && _row < 2) {
-        UISegmentedControl *s = _row == 0 ? _picture : _fps;
+        UISegmentedControl *s = _row == -1 ? _save : _row == 0 ? _picture : _fps;
         s.selectedSegmentIndex = MAX(0, MIN((NSInteger)s.numberOfSegments - 1, s.selectedSegmentIndex + (right ? 1 : -1)));
-        [self picked:s];
+        if ([s isEnabledForSegmentAtIndex:s.selectedSegmentIndex]) {
+            if (s == _save) [self savePicked:s]; else [self picked:s];
+        } else s.selectedSegmentIndex = 1;
     } else if (confirm && _row == 2) { [self start]; return; }
     else if (confirm) _row = 2;
     [self focus];
