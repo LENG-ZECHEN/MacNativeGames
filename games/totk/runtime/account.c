@@ -124,6 +124,15 @@ static void initialize(void){
  }
 loaded:
  usersActive=marked>=0?marked:0;
+ /* TOTK_USER_ID (32 hex digits, as the save folder's name): the user picked for this start - the Mac launcher's or the
+    phone start screen's save choice. It becomes the store's marked user too, so the settings panel shows it. An id the
+    store does not hold is ignored (the marked user plays). */
+ { const char *want=getenv("TOTK_USER_ID");Uid w;
+   if(want&&*want&&parse32(want,&w)){
+    int i=0;while(i<usersCount&&!(users[i].lo==w.lo&&users[i].hi==w.hi))i++;
+    if(i<usersCount){if(i!=usersActive){usersActive=i;users_file_save();}}
+    else fprintf(stderr,"[totk] users: TOTK_USER_ID %s is not a user of this profile; \"%s\" plays\n",want,users[usersActive].name);
+   } }
  local.lo=users[usersActive].lo;local.hi=users[usersActive].hi;
  lock_release();
  fprintf(stderr,"[totk] %d local user(s), \"%s\" in force\n",usersCount,users[usersActive].name);

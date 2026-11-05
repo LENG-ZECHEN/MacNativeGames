@@ -96,7 +96,9 @@ static void cloud_folder_forget_if_asked(void) {
 }
 static BOOL external_save_sync(void) {
     NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    return [NSFileManager.defaultManager fileExistsAtPath:[docs stringByAppendingPathComponent:@"save-personal/sync-ready.txt"]];
+    /* A sync service outside the app owns the saves (it writes this file into the save folder): the built-in folder sync
+       stays off. Without it, the folder sync (runtime/cloud_save.m) carries every user of Documents/save. */
+    return [NSFileManager.defaultManager fileExistsAtPath:[docs stringByAppendingPathComponent:@"save/external-save-sync.txt"]];
 }
 static void cloud_folder_apply(void) {
     if (external_save_sync()) { setenv("TOTK_EXTERNAL_SAVE_SYNC", "1", 1); return; }
@@ -242,8 +244,10 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
         const char *testProfile = getenv("TOTK_TEST_PROFILE");
         NSString *folder = @"save";
         if (testProfile && !strcmp(testProfile, "1")) folder = @"save-test";
-        else if ([[NSUserDefaults.standardUserDefaults stringForKey:@"TOTK_SAVE_PROFILE"] isEqualToString:@"personal"] &&
-                 [NSFileManager.defaultManager fileExistsAtPath:[docs stringByAppendingPathComponent:@"save-personal/sync-ready.txt"]]) folder = @"save-personal";
+        /* The save is a user of Documents/save (users.txt, runtime/account.c), picked on the start screen: its id goes to
+           the game as TOTK_USER_ID, the same id as on the Mac, so the folder sync carries each save to its counterpart. */
+        NSString *user = [NSUserDefaults.standardUserDefaults stringForKey:@"TOTK_USER_ID"];
+        if (!(testProfile && !strcmp(testProfile, "1")) && user.length == 32 && !getenv("TOTK_USER_ID")) setenv("TOTK_USER_ID", user.UTF8String, 1);
         setenv("TOTK_PROFILE_DIR", [docs stringByAppendingPathComponent:folder].fileSystemRepresentation, 1);
         fprintf(stderr, "[totk] save profile: %s\n", folder.UTF8String);
         apply_display_settings();

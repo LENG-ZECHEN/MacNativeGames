@@ -293,6 +293,37 @@ static NSString *pick_profile(NSString *data, NSString **name) {
     return folders[i];
 }
 
+/* User picker: a profile whose users.txt (runtime/account.c: "[*]<32 hex id>\t<name>" per line) holds two or more users
+   asks at every start which one plays, the one the store marks (the last one played) first. Each user has its own save
+   area (save/<id>) and, with save sync on, its own copy in the sync folder (runtime/cloud_save.m), so the Mac and the
+   phone pick the same save by the same id. Returns the id (TOTK_USER_ID for runtime/account.c), nil to keep the marked
+   user, @"" when cancelled. A start that names TOTK_USER_ID or TOTK_PROFILE_DIR (test tools) is not asked. */
+static NSString *pick_user(NSString *profile) {
+    if ((getenv("TOTK_USER_ID") && *getenv("TOTK_USER_ID")) || (getenv("TOTK_PROFILE_DIR") && *getenv("TOTK_PROFILE_DIR"))) return nil;
+    NSString *text = [NSString stringWithContentsOfFile:[profile stringByAppendingPathComponent:@"users.txt"] encoding:NSUTF8StringEncoding error:nil];
+    NSMutableArray<NSString *> *names = [NSMutableArray array], *ids = [NSMutableArray array];
+    for (NSString *raw in [text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        NSString *line = raw; BOOL marked = [line hasPrefix:@"*"]; if (marked) line = [line substringFromIndex:1];
+        NSRange tab = [line rangeOfString:@"\t"];
+        if (tab.location != 32) continue;
+        NSString *uid = [line substringToIndex:32].lowercaseString, *name = [line substringFromIndex:33];
+        if ([uid rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"].invertedSet].location != NSNotFound) continue;
+        if (!name.length) name = @"Local";
+        if (marked) { [names insertObject:name atIndex:0]; [ids insertObject:uid atIndex:0]; }   // the last one played: Return
+        else { [names addObject:name]; [ids addObject:uid]; }
+    }
+    if (names.count < 2) return nil;
+    [NSApplication sharedApplication]; [NSApp activateIgnoringOtherApps:YES];
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"选择存档 / Choose a save";
+    alert.informativeText = @"Return 打开上次玩的，Esc 取消。\nReturn opens the one played last, Esc cancels.";
+    for (NSString *n in names) [alert addButtonWithTitle:n];
+    [alert addButtonWithTitle:@"取消 / Cancel"].keyEquivalent = @"\033";
+    NSInteger i = [alert runModal] - NSAlertFirstButtonReturn;
+    if (i < 0 || i >= (NSInteger)names.count) return @"";
+    return ids[i];
+}
+
 static BOOL make_dir(NSString *path) {
     return [NSFileManager.defaultManager createDirectoryAtPath:path withIntermediateDirectories:YES attributes:nil error:nil];
 }
@@ -482,6 +513,11 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
                 profile = picked;
                 if (!make_dir(profile)) { show_error([NSString stringWithFormat:@"Cannot create %@.", profile]); return 1; }
             }
+        }
+        {   /* the profile's users: which save plays (pick_user) */
+            NSString *user = pick_user(profile);
+            if (user && !user.length) return 0;
+            if (user) setenv("TOTK_USER_ID", user.UTF8String, 1);
         }
         if (access([data stringByAppendingPathComponent:@"before-start"].fileSystemRepresentation, X_OK) == 0)
             setenv("TOTK_EXTERNAL_SAVE_SYNC", "1", 1);

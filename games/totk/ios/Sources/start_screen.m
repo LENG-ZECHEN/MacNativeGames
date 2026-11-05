@@ -9,6 +9,7 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
 @implementation TOTKStartView {
     void (^_onStart)(void);
     UISegmentedControl *_picture, *_fps, *_save;
+    NSMutableArray<NSString *> *_userIds;   // the save segments' user ids (users.txt)
     UIButton *_start;
     NSInteger _row;          // -1 save, 0 picture, 1 frame rate, 2 start (controller focus)
     NSTimer *_poll;
@@ -61,13 +62,28 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
         [s.widthAnchor constraintEqualToConstant:(_hasScene || _hasResolution) && s == _picture ? 420 : 340].active = YES;   // three picture choices need the room
         [s addTarget:self action:@selector(picked:) forControlEvents:UIControlEventValueChanged];
     }
-    _save = [[UISegmentedControl alloc] initWithItems:@[T(@"我的存档", @"My save"), T(@"100% 存档", @"100% save")]];
+    /* The saves are the users of Documents/save (users.txt, runtime/account.c: "[*]<32 hex id>\t<name>"): one segment
+       each, the one picked last (TOTK_USER_ID) or else the store's marked user selected. Hidden with fewer than two. */
+    _userIds = [NSMutableArray array];
+    NSMutableArray<NSString *> *userNames = [NSMutableArray array];
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *store = [NSString stringWithContentsOfFile:[docs stringByAppendingPathComponent:@"save/users.txt"] encoding:NSUTF8StringEncoding error:nil];
+    NSString *marked = nil;
+    for (NSString *raw in [store componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        NSString *line = raw; BOOL star = [line hasPrefix:@"*"]; if (star) line = [line substringFromIndex:1];
+        if (line.length < 33 || [line characterAtIndex:32] != '\t') continue;
+        NSString *uid = [line substringToIndex:32].lowercaseString;
+        if ([uid rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"].invertedSet].location != NSNotFound) continue;
+        [_userIds addObject:uid]; [userNames addObject:[line substringFromIndex:33].length ? [line substringFromIndex:33] : @"Local"];
+        if (star) marked = uid;
+    }
+    _save = [[UISegmentedControl alloc] initWithItems:userNames.count ? userNames : @[@"-"]];
     _save.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     [_save.widthAnchor constraintEqualToConstant:340].active = YES;
-    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    BOOL ready = [NSFileManager.defaultManager fileExistsAtPath:[docs stringByAppendingPathComponent:@"save-personal/sync-ready.txt"]];
-    [_save setEnabled:ready forSegmentAtIndex:0];
-    _save.selectedSegmentIndex = ready && [[d stringForKey:@"TOTK_SAVE_PROFILE"] isEqualToString:@"personal"] ? 0 : 1;
+    NSString *picked = [d stringForKey:@"TOTK_USER_ID"];
+    NSUInteger at = [_userIds indexOfObject:picked ?: @""];
+    if (at == NSNotFound) at = [_userIds indexOfObject:marked ?: @""];
+    _save.selectedSegmentIndex = at == NSNotFound ? 0 : (NSInteger)at;
     [_save addTarget:self action:@selector(savePicked:) forControlEvents:UIControlEventValueChanged];
     _pictureRow = [self row:T(@"画面", @"Picture") control:_picture];
     _fpsRow = [self row:T(@"帧率", @"Frame rate") control:_fps];
@@ -103,7 +119,9 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     /* The icon only on an iPad: on an iPhone in landscape the rows did not fit with it (user 2026-11-01). */
     NSMutableArray<UIView *> *rows = [NSMutableArray arrayWithObject:title];
     if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) [rows insertObject:icon atIndex:0];
-    [rows addObjectsFromArray:@[[self row:T(@"存档", @"Save") control:_save], _pictureRow, _fpsRow, _customInfo, note, _start]];
+    UIStackView *saveRow = [self row:T(@"存档", @"Save") control:_save];
+    saveRow.hidden = _userIds.count < 2;   // one save: nothing to pick
+    [rows addObjectsFromArray:@[saveRow, _pictureRow, _fpsRow, _customInfo, note, _start]];
     UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:rows];
     stack.axis = UILayoutConstraintAxisVertical; stack.alignment = UIStackViewAlignmentCenter; stack.spacing = 12;
     [stack setCustomSpacing:16 afterView:title]; [stack setCustomSpacing:16 afterView:note];
@@ -179,10 +197,11 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
 
 - (NSInteger)firstRow { return -1; }
 - (void)savePicked:(UISegmentedControl *)control {
-    [NSUserDefaults.standardUserDefaults setObject:control.selectedSegmentIndex == 0 ? @"personal" : @"complete" forKey:@"TOTK_SAVE_PROFILE"];
+    if (control.selectedSegmentIndex >= 0 && control.selectedSegmentIndex < (NSInteger)_userIds.count)
+        [NSUserDefaults.standardUserDefaults setObject:_userIds[(NSUInteger)control.selectedSegmentIndex] forKey:@"TOTK_USER_ID"];
 }
 - (BOOL)visibleRow:(NSInteger)row {
-    return row == -1 || row == 2 || (row == 0 && !_pictureRow.hidden) || (row == 1 && !_fpsRow.hidden);
+    return (row == -1 && _userIds.count >= 2) || row == 2 || (row == 0 && !_pictureRow.hidden) || (row == 1 && !_fpsRow.hidden);
 }
 
 - (void)picked:(UISegmentedControl *)control {
