@@ -1,6 +1,7 @@
 /* Native keyboard and macOS gamepad backed full-key controller. State ABI follows libnx HID. */
 #include <TargetConditionals.h>
 #include "runtime.h"
+#include "game_version.h"
 #include "autoload.h"
 #include "world_survey.h"
 #include "keyboard_map.h"
@@ -144,6 +145,14 @@ static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_st
  }*out=state;pthread_mutex_unlock(&inputLock);return 1;}
 static int disconnected_states(NpadState *out,int max,const uint32_t *id){if(id)input_log("joy-con state",*id);if(max<=0)return 0;if(!out)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);*out=(NpadState){.sampling=++sample};pthread_mutex_unlock(&inputLock);return 1;}
 static void hold_type(int type){if(type<0||type>1)runtime_fail("invalid joy hold type");holdType=type;(void)holdType;}
+#ifdef GAME_NS2
+/* SDK 20's single-state forms (Pokemon Pokopia): the latest state, as the plural forms give it with a count of 1. */
+static void full_state(NpadState *out,const uint32_t *id){pad_states(out,1,id,1);}
+static void handheld_state(NpadState *out,const uint32_t *id){pad_states(out,1,id,2);}
+static void disconnected_state(NpadState *out,const uint32_t *id){disconnected_states(out,1,id);}
+static int get_hold_type(void){return holdType;}
+static void handheld_activation(int mode){if(mode<0||mode>2)runtime_fail("invalid handheld activation mode");}
+#endif
 static void disconnect(const uint32_t *id){if(!id)runtime_fail("disconnect id");input_log("disconnect",*id);if(*id==pad_id()){   /* only the pad in use: in handheld mode TOTK disconnects player 1 */pthread_mutex_lock(&inputLock);allowed=false;pthread_mutex_unlock(&inputLock);runtime_input_clear();}}
 /* Mouse and keyboard devices: the Mac keyboard drives the full-key controller, so the game sees no mouse
    (not connected) and a keyboard with no keys, avoiding duplicated input. Layouts follow the SDK (0x28 / 0x30 bytes). */
@@ -174,9 +183,21 @@ static uint32_t seven_axis_init(void *work,unsigned long size){(void)work;(void)
 static uint32_t seven_axis_ok(void){return 0;}
 static void seven_axis_reset(void){}
 static int seven_axis_states(void *out,int count){(void)out;(void)count;return 0;}
+static uint32_t show_controller_support_v1(const void *arg){return show_controller_support(NULL,arg);}
+#endif
+#if defined(GAME_BOTW) || defined(GAME_NS2)
 static void zero_drift_mode(const void *handle,const int *mode){(void)handle;(void)mode;}
 static void joy_dual(const uint32_t *id){(void)id;}
-static uint32_t show_controller_support_v1(const void *arg){return show_controller_support(NULL,arg);}
+#endif
+#ifdef GAME_NS2
+/* SDK 20 (Donkey Kong Bananza): single / merged Joy-Con assignment and the touch screen. The host's pads are whole
+   controllers and have no touch screen, so the assignment changes nothing; the touch screen reports no touches. */
+static void joy_single(const uint32_t *id, int type) { (void)id; (void)type; }
+static uint32_t joy_merge(const uint32_t *a, const uint32_t *b) { (void)a; (void)b; return 0; }
+static void touch_init(void) {}
+/* TouchScreenState<1>: sampling number, touch count, then one 0x28-byte TouchState. The SDK reads it from the hid shared
+   memory the host does not map and aborts (Donkey Kong Bananza, sdk GetTouchScreenState<2> from main): no touches. */
+static void touch_state1(uint8_t *out) { static _Atomic int64_t sample; memset(out, 0, 0x10 + 0x28); int64_t n = ++sample; memcpy(out, &n, 8); }
 #endif
 void *runtime_input_override(const char *name){
  void *feedback=runtime_hid_feedback_override(name);if(feedback)return feedback;
@@ -194,9 +215,19 @@ void *runtime_input_override(const char *name){
  {"_ZN2nn3hid23StartSevenSixAxisSensorEv",seven_axis_ok},{"_ZN2nn3hid22StopSevenSixAxisSensorEv",seven_axis_ok},
  {"_ZN2nn3hid32ResetSevenSixAxisSensorTimestampEv",seven_axis_reset},
  {"_ZN2nn3hid27GetSevenSixAxisSensorStatesEPNS0_23SevenSixAxisSensorStateEi",seven_axis_states},
- {"_ZN2nn3hid25SetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleERKNS0_22GyroscopeZeroDriftModeE",zero_drift_mode},
- {"_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj",joy_dual},
  {"_ZN2nn3hid21ShowControllerSupportERKNS0_20ControllerSupportArgE",show_controller_support_v1}
+#endif
+#if defined(GAME_BOTW) || defined(GAME_NS2)
+ ,{"_ZN2nn3hid25SetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleERKNS0_22GyroscopeZeroDriftModeE",zero_drift_mode},
+ {"_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj",joy_dual}
+#endif
+#ifdef GAME_NS2
+ ,{"_ZN2nn3hid30SetNpadJoyAssignmentModeSingleERKjNS0_17NpadJoyDeviceTypeE",joy_single},{"_ZN2nn3hid23MergeSingleJoyAsDualJoyERKjS2_",joy_merge},
+ {"_ZN2nn3hid12GetNpadStateEPNS0_16NpadFullKeyStateERKj",full_state},{"_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj",handheld_state},
+ {"_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj",disconnected_state},{"_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyLeftStateERKj",disconnected_state},
+ {"_ZN2nn3hid12GetNpadStateEPNS0_17NpadJoyRightStateERKj",disconnected_state},{"_ZN2nn3hid18GetNpadJoyHoldTypeEv",get_hold_type},
+ {"_ZN2nn3hid29SetNpadHandheldActivationModeENS0_26NpadHandheldActivationModeE",handheld_activation},
+ {"_ZN2nn3hid21InitializeTouchScreenEv",touch_init},{"_ZN2nn3hid19GetTouchScreenStateILm1EEEvPNS0_16TouchScreenStateIXT_EEE",touch_state1}
 #endif
  };
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
@@ -277,6 +308,13 @@ static void *input_file(void *arg) {
         } else if (sscanf(line,"edr %u %n",&code,&used)==1 && used && !line[used] && code<=1) {
             extern void runtime_front_hdr_set(int enabled);runtime_front_hdr_set((int)code);
 #endif
+#if defined(GAME_DKB) || defined(GAME_POKOPIA)
+        } else if (!strncmp(line,"resolution ",11)) {
+            unsigned w,h;int n=0;
+            if(sscanf(line+11,"%ux%u %n",&w,&h,&n)==2&&n&&!line[11+n]) {
+                if(!runtime_output_size_set(w,h))fprintf(stderr,"[totk] " GAME_NAME " live resolution rejected: %ux%u\n",w,h);
+            } else fprintf(stderr,"[totk] resolution command needs widthxheight\n");
+#endif
         } else if (!strncmp(line, "flag ", 5)) {
             /* "flag <name> <0|1>": switch a graphics behaviour while the game runs (A/B without restarting); rumble / gyro mute and unmute those */
             char name[64]; int v; if (sscanf(line + 5, "%63s %d", name, &v) != 2) runtime_fail("diagnostic flag needs <name> <0|1>");
@@ -353,6 +391,54 @@ static void *input_file(void *arg) {
             extern void runtime_diag_cam_src(double secs);
             double secs = atof(line + 7); if (!(secs > 0 && secs <= 120)) runtime_fail("camsrc takes 1 to 120 seconds");
             runtime_diag_cam_src(secs);
+        } else if (!strncmp(line, "watchw ", 7) || !strncmp(line, "watchr ", 7)) {   /* "watchw|watchr <hex address> <seconds>": who writes / reads those 4 bytes (VR stereo RE) */
+            extern void runtime_diag_watch_write(uint64_t addr, int secs, int load);
+            char *e; uint64_t a = strtoull(line + 7, &e, 16); runtime_diag_watch_write(a, (int)strtol(e, NULL, 10), line[5] == 'r');
+        } else if (!strncmp(line, "bpvals ", 7)) {   /* "bpvals <hex main offset> <register> <seconds>": the register's values there (VR stereo RE) */
+            extern void runtime_diag_bp_vals(uint64_t off, int reg, double secs);
+            char *e; uint64_t o = strtoull(line + 7, &e, 16); char *e2; long r = strtol(e, &e2, 10); runtime_diag_bp_vals(o, (int)r, strtod(e2, NULL));
+        } else if (!strncmp(line, "bpregs ", 7)) {   /* "bpregs <hex main offset>": registers at the first hit (VR stereo RE) */
+            extern void runtime_diag_bp_regs(uint64_t off);
+            extern void runtime_diag_bp_regs_if(uint64_t off, int reg, uint64_t lo, uint64_t hi);
+            char *e; uint64_t o = strtoull(line + 7, &e, 16); char *e2; long r = strtol(e, &e2, 10);
+            if (e2 != e) { char *e3; uint64_t lo = strtoull(e2, &e3, 16); runtime_diag_bp_regs_if(o, (int)r, lo, strtoull(e3, NULL, 16)); }   /* "bpregs <off> <reg> <lo> <hi>": only when x<reg> is in [lo, hi) */
+            else runtime_diag_bp_regs(o);
+        } else if (!strncmp(line, "b2pair", 6)) {   /* "b2pair": first / second run recordings paired by identity (stereo B2 diagnostic) */
+            extern void runtime_vr_b2_pair(void);
+            runtime_vr_b2_pair();
+        } else if (!strncmp(line, "b2slots", 7)) {   /* "b2slots": where the game keeps the runs' handles (stereo B2 diagnostic) */
+            extern void runtime_vr_b2_slots(void);
+            runtime_vr_b2_slots();
+        } else if (!strncmp(line, "b2calls", 7)) {   /* "b2calls": the next frame's calls of the runs' recordings (stereo B2 diagnostic) */
+            extern void runtime_vr_b2_calls(void);
+            runtime_vr_b2_calls();
+        } else if (!strncmp(line, "b2eye ", 6)) {   /* "b2eye <mm>": half the eye distance for stereo B2 (diagnostic until the VR thread sets it) */
+            extern void runtime_vr_b2_eye(float mm);
+            runtime_vr_b2_eye((float)atof(line + 6));
+        } else if (!strncmp(line, "b2 ", 3)) {   /* "b2 <0|1|2|3> [mask]": zeldaVR stereo B2, the second render run per game update (game_patches_v143.c) */
+            extern void runtime_vr_b2(int on);
+            extern void runtime_vr_b2_mask(unsigned m);
+            char *e; long mode = strtol(line + 3, &e, 10); if (*e == ' ') runtime_vr_b2_mask((unsigned)strtoul(e, NULL, 0));
+            runtime_vr_b2((int)mode);
+        } else if (!strncmp(line, "dumpmain ", 9)) {   /* "dumpmain <file>": main's loaded image, relocated (VR stereo RE) */
+            extern void runtime_diag_dump_main(const char *path);
+            char path[1024]; snprintf(path, sizeof path, "%s", line + 9); path[strcspn(path, "\r\n")] = 0;
+            runtime_diag_dump_main(path);
+        } else if (!strncmp(line, "peek", 4) && (line[4] == ' ' || (line[4] == 'm' && line[5] == ' '))) {   /* "peek <hex addr> [n]" / "peekm <hex main offset> [n]" */
+            extern void runtime_diag_peek(uint64_t a, int n, int rel);
+            const int rel = line[4] == 'm'; char *e; uint64_t a = strtoull(line + (rel ? 6 : 5), &e, 16);
+            runtime_diag_peek(a, (int)strtol(e, NULL, 10), rel);
+        } else if (!strncmp(line, "calctree", 8)) {   /* "calctree": the method tree the frame's calc walks (VR stereo) */
+            extern void runtime_diag_calc_tree(void);
+            runtime_diag_calc_tree();
+        } else if (!strncmp(line, "jobdump", 7)) {   /* "jobdump": the jobs of the frame's render job lists (VR stereo) */
+            extern void runtime_diag_job_dump(void);
+            runtime_diag_job_dump();
+        } else if (!strncmp(line, "frametrace ", 11)) {   /* "frametrace <seconds> <hex offset>...": threads and call chains per frame (VR) */
+            extern void runtime_diag_frame_trace(double secs, const char *offs);
+            char *rest; double secs = strtod(line + 11, &rest); if (!(secs > 0 && secs <= 30)) runtime_fail("frametrace takes 1 to 30 seconds and up to 4 hex offsets in main");
+            while (*rest == ' ') rest++;
+            runtime_diag_frame_trace(secs, rest);
         } else if (!strncmp(line, "camwatch ", 9)) {   /* "camwatch <seconds>": who writes the main camera's matrix (VR) */
             extern void runtime_diag_cam_watch(double secs, int src);   /* "camwatch <seconds> src": camsrc's copy source instead */
             double secs = atof(line + 9); if (!(secs > 0 && secs <= 120)) runtime_fail("camwatch takes 1 to 120 seconds [src]");
@@ -370,7 +456,12 @@ static void *input_file(void *arg) {
     }
     fclose(f); return NULL;
 }
-__attribute__((constructor)) static void input_file_start(void) {
+/* loader.c has the real one; the input and autoload probes link this file without it and are never the app. */
+__attribute__((weak)) int runtime_app_mode(void) { return 0; }
+void runtime_input_file_start(void) {
+    static int started; if (started) return;
     const char *e = getenv("TOTK_INPUT_FILE"); if (!e || !*e) return;
-    pthread_t t; if (pthread_create(&t, NULL, input_file, (void *)e)) runtime_fail("diagnostic input thread"); pthread_detach(t);
+    started = 1; pthread_t t; if (pthread_create(&t, NULL, input_file, (void *)e)) runtime_fail("diagnostic input thread"); pthread_detach(t);
 }
+/* Started as the Mac app, the launcher part (runtime_app_launch) names the file only later: main starts it then. */
+__attribute__((constructor)) static void input_file_start(void) { if (!runtime_app_mode()) runtime_input_file_start(); }

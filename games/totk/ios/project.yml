@@ -18,6 +18,8 @@ targets:
           - frontend.m
           - loader.c
           - game_patches_botw.c
+          - game_patches_ns2.c
+          - offline_host.c
       - path: ../third_party/d2r_gfx/gfx/nvn
       - path: ../third_party/d2r_gfx/gfx/tex
       - path: ../third_party/ns2pad/core/ns2_core.c          # a Switch 2 Pro Controller over Bluetooth LE
@@ -30,6 +32,7 @@ targets:
       - sdk: CoreHaptics.framework   # the iPhone's Taptic Engine while the touch controls are used
       - sdk: CoreMotion.framework    # the iPhone's own gyro while the touch controls are used
       - sdk: CoreBluetooth.framework # a Switch 2 Pro Controller (runtime/ns2pad_bridge.m)
+      - sdk: Photos.framework        # a controller's capture button saves to the photo library (runtime/frontend_ios.m)
     info:
       path: Sources/Info.plist
       properties:
@@ -51,9 +54,14 @@ targets:
         GCSupportsControllerUserInteraction: true
         NSMotionUsageDescription: Tilt the iPhone to aim while you play with the on-screen controls.
         NSBluetoothAlwaysUsageDescription: Connect a Nintendo Switch 2 Pro Controller over Bluetooth.
+        NSPhotoLibraryAddUsageDescription: Saves the screenshots you take with a controller to your photo library.
         GCSupportedGameControllers:
           - ProfileName: ExtendedGamepad
         CADisableMinimumFrameDurationOnPhone: true
+        UIApplicationShortcutItems:   # the Home Screen icon's menu: choose the save sync folder (main.m, runtime/cloud_save.m)
+          - UIApplicationShortcutItemType: save-sync-folder
+            UIApplicationShortcutItemTitle: Save sync folder   # Sources/<language>.lproj/InfoPlist.strings
+            UIApplicationShortcutItemIconSymbolName: folder
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
           UISceneConfigurations:

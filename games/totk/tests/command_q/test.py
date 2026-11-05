@@ -29,3 +29,13 @@ with tempfile.TemporaryDirectory(prefix="totk-command-q-") as work:
     assert menus.returncode == 0, menus.stdout + menus.stderr
     assert "live 60-to-120" in menus.stdout
     print(menus.stdout.strip())
+
+    inputs = subprocess.run([str(binary), "4", "0"], capture_output=True, text=True, timeout=15)
+    assert inputs.returncode == 0, inputs.stdout + inputs.stderr
+    assert "Command input isolation" in inputs.stdout
+    print(inputs.stdout.strip())
+
+    screenshots = subprocess.run([str(binary), "5", "0"], capture_output=True, text=True, timeout=15)
+    assert screenshots.returncode == 0, screenshots.stdout + screenshots.stderr
+    assert "nonreused generations" in screenshots.stdout
+    print(screenshots.stdout.strip())

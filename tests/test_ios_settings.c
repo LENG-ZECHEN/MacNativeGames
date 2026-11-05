@@ -148,7 +148,14 @@ int main(int argc, char **argv) {
            with a history (the picture mode replaced its row). */
         failures++; fprintf(stderr, "the key -> layer table is not what main.m and the tests expect\n");
     }
-    /* The in-game button cycles 60 -> 40 -> 30 -> 60; the preset layer saves it in its own row, the custom layer leaves the pane's cap alone. */
+    /* Tears of the Kingdom's docked scene row (TOTK_DOCKED_SCENE, as Breath of the Wild's TOTK_BOTW_SCENE): HD is the
+       canvas's 1920x1080, anything else the Switch's 1600x900; a preset row. */
+    if (strcmp(totk_docked_scene("1920x1080"), "1920x1080") || strcmp(totk_docked_scene("1600x900"), "1600x900") ||
+        strcmp(totk_docked_scene(NULL), "1600x900") || strcmp(totk_docked_scene("3840x2160"), "1600x900") ||
+        totk_key_layer_of("TOTK_DOCKED_SCENE") != TOTK_KEY_PRESET) {
+        failures++; fprintf(stderr, "the docked scene row must map to 1600x900 or 1920x1080 and belong to the presets\n");
+    }
+    /* The in-game button: the preset layer saves 30 / 60 in its own row; the custom layer leaves the pane's cap alone. */
     if (!totk_frame_button_key(0) || strcmp(totk_frame_button_key(0), "TOTK_PHONE_FPS") || totk_frame_button_key(1) ||
         totk_frame_button_target(60) != 40 || totk_frame_button_target(40) != 30 || totk_frame_button_target(30) != 60) {
         failures++; fprintf(stderr, "the in-game frame-rate button mapping is wrong\n");

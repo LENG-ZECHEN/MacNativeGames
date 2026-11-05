@@ -203,9 +203,10 @@ class MetalCompilerTests(unittest.TestCase):
         self.assertEqual((metal, version, env['DEVELOPER_DIR']),
                          ('/toolchain/metal', 'Apple metal version 32023', '/Volumes/x/Xcode.app/Contents/Developer'))
 
-    def test_native_5k_is_explicit_and_old_large_overlays_are_removed(self):
-        self.assertFalse(build_app.parse_args(['game.nsp', '-k', 'keys']).native_5k)
+    def test_native_5k_can_be_automatic_or_explicit_and_old_large_overlays_are_removed(self):
+        self.assertIsNone(build_app.parse_args(['game.nsp', '-k', 'keys']).native_5k)
         self.assertTrue(build_app.parse_args(['game.nsp', '-k', 'keys', '--native-5k']).native_5k)
+        self.assertFalse(build_app.parse_args(['game.nsp', '-k', 'keys', '--no-native-5k']).native_5k)
         with tempfile.TemporaryDirectory() as t:
             tree = Path(t)
             build_app.remove_large_output_overlays(tree, 'v143')
@@ -215,7 +216,7 @@ class MetalCompilerTests(unittest.TestCase):
             build_app.remove_large_output_overlays(tree, 'v143')
             self.assertEqual(sorted(p.name for p in folder.iterdir()), ['2560x1440'])
 
-    def test_native_5k_rejects_breath_of_the_wild_before_building_it(self):
+    def test_native_5k_rejects_unsupported_games_before_building_them(self):
         with tempfile.TemporaryDirectory() as t:
             root = Path(t)
             game, keys = root / 'game.nsp', root / 'keys'
@@ -224,7 +225,7 @@ class MetalCompilerTests(unittest.TestCase):
                  mock.patch.object(build_app, 'fonts_valid', return_value=True), \
                  mock.patch.object(build_app, 'prerequisites', return_value=Path('/python')), \
                  mock.patch.object(build_app, 'prepare_work', return_value=root/'tree'), \
-                 mock.patch.object(build_app, 'identify_game', return_value='botw'):
+                 mock.patch.object(build_app, 'identify_game', return_value='dkb'):
                 with self.assertRaisesRegex(build_app.BuildError, '--native-5k is only available'):
                     build_app.main([str(game), '-k', str(keys), '--work', str(root/'work'), '--native-5k'])
 

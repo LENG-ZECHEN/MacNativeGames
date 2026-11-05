@@ -34,6 +34,8 @@ int totk_frame_env_build(const char *cap, totk_frame_env *out);
 /* docked: the pane's Full HD switch. Always succeeds. */
 int totk_preset_env_build(int docked, totk_preset_env *out);
 /* fps is the pane's preset row: the same values and meaning as the custom cap. 0 for anything else. */
+const char *totk_docked_scene(const char *choice);   /* TOTK_DOCKED_SCENE -> the docked TOTK_RENDER_RES */
+/* "60" is capped at 60; "40" and "30" use the phone hold. */
 int totk_preset_frame_env_build(const char *fps, totk_frame_env *out);
 
 const char *totk_picture_mode_default(void);

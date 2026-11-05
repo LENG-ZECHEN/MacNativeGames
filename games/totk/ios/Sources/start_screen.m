@@ -1,6 +1,7 @@
 #import "start_screen.h"
 #import <GameController/GameController.h>
 #include "totk_ui_lang.h"
+#include "ns2_resolution.h"
 
 static BOOL zh(void) { return totk_ui_zh(); }   // the language of the host's other text (boot screen, overlays; TOTK_UI_LANG overrides)
 static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
@@ -13,6 +14,8 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     NSTimer *_poll;
     BOOL _held, _done;       // a controller button or direction held since the last poll
     BOOL _hasPicture;        // the game's Settings pane has Full HD (docked): the picture row is shown
+    BOOL _hasResolution;
+    NSString *_sceneKey;
     BOOL _hasScene;          // and a docked scene row (Breath of the Wild): 1080p comes as original and HD
     BOOL _pictureSet, _fpsSet;   // changed on this screen: only these are written back (not the values read at launch)
     UIStackView *_pictureRow, *_fpsRow;
@@ -42,16 +45,20 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     title.text = name; title.font = [UIFont systemFontOfSize:34 weight:UIFontWeightBold]; title.textColor = UIColor.whiteColor;
     title.adjustsFontSizeToFitWidth = YES; title.minimumScaleFactor = 0.6;
 
-    /* Breath of the Wild's pane also has the docked scene (TOTK_BOTW_SCENE, build_ipa.py botw_pane): 1080p original is
-       the Switch's 1600x900 scene upscaled to 1920x1080, 1080p HD the scene at 1920x1080. */
-    _hasScene = [self settingsPaneHas:@"TOTK_BOTW_SCENE"];
+    /* The pane's docked scene row (Breath of the Wild: TOTK_BOTW_SCENE, build_ipa.py botw_pane; Tears of the Kingdom:
+       TOTK_DOCKED_SCENE, settings_map.c totk_docked_scene): 1080p original is the Switch's 1600x900 scene upscaled to
+       1920x1080, 1080p HD the scene at 1920x1080. */
+    _sceneKey = [self settingsPaneHas:@"TOTK_BOTW_SCENE"] ? @"TOTK_BOTW_SCENE" : [self settingsPaneHas:@"TOTK_DOCKED_SCENE"] ? @"TOTK_DOCKED_SCENE" : nil;
+    _hasScene = _sceneKey != nil;
+    _hasResolution = [self settingsPaneHas:@"TOTK_OUTPUT_RES"];
     _picture = _hasScene
         ? [[UISegmentedControl alloc] initWithItems:@[T(@"720p（掌机）", @"720p (handheld)"), T(@"1080p 原始", @"1080p original"), T(@"1080p 高清", @"1080p HD")]]
         : [[UISegmentedControl alloc] initWithItems:@[T(@"720p（掌机）", @"720p (handheld)"), T(@"1080p（底座）", @"1080p (docked)")]];
+    if (_hasResolution) _picture = [[UISegmentedControl alloc] initWithItems:@[@"540p", @"720p", @"1080p", T(@"自定义…", @"Custom…")]];
     _fps = [[UISegmentedControl alloc] initWithItems:@[@"30 fps", @"40 fps", @"60 fps"]];
     for (UISegmentedControl *s in @[_picture, _fps]) {
         s.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-        [s.widthAnchor constraintEqualToConstant:_hasScene && s == _picture ? 420 : 340].active = YES;   // three picture choices need the room
+        [s.widthAnchor constraintEqualToConstant:(_hasScene || _hasResolution) && s == _picture ? 420 : 340].active = YES;   // three picture choices need the room
         [s addTarget:self action:@selector(picked:) forControlEvents:UIControlEventValueChanged];
     }
     _save = [[UISegmentedControl alloc] initWithItems:@[T(@"我的存档", @"My save"), T(@"100% 存档", @"100% save")]];
@@ -64,7 +71,7 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     [_save addTarget:self action:@selector(savePicked:) forControlEvents:UIControlEventValueChanged];
     _pictureRow = [self row:T(@"画面", @"Picture") control:_picture];
     _fpsRow = [self row:T(@"帧率", @"Frame rate") control:_fps];
-    _hasPicture = [self settingsPaneHas:@"TOTK_DOCKED"];
+    _hasPicture = _hasResolution || [self settingsPaneHas:@"TOTK_DOCKED"];
     /* With the Settings app's custom picture on, the two rows above (the presets) do not apply: the screen says what
        does instead of offering choices that change nothing. */
     _customInfo = [UILabel new];
@@ -73,10 +80,12 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     [_customInfo.widthAnchor constraintLessThanOrEqualToConstant:520].active = YES;
 
     UILabel *note = [UILabel new]; _note = note;
-    if (_hasScene)
+    if (_hasResolution)
+        note.text = T(@"默认 540p（960×540）。自定义宽×高可在这里或“设置”App 中修改。保留原始贴图及完整 mip。", @"540p (960×540) by default. Set a custom width × height here or in Settings. Original textures and full mip chains are preserved.");
+    else if (_hasScene)
         note.text = T(@"1080p 原始：输出 1920×1080，画面 1600×900，和 Switch 底座一样。1080p 高清：画面也是 1920×1080，更清晰也更吃性能。设置也可以在“设置”App 里改。",
                       @"1080p original: 1920×1080 output with a 1600×900 scene, as the Switch docked. 1080p HD: the scene at 1920×1080 too, sharper and heavier. The Settings app has these choices too.");
-    else   // Tears of the Kingdom's docked settings keep the scene at 1600x900 (main.m apply_display_settings)
+    else   // a pane without the scene row keeps the docked scene at 1600x900 (main.m apply_display_settings)
         note.text = T(@"1080p：输出 1920×1080，画面 1600×900，和 Switch 底座一样，更清晰也更吃性能。设置也可以在“设置”App 里改。",
                       @"1080p: 1920×1080 output with a 1600×900 scene, as the Switch docked; sharper and heavier. The Settings app has these choices too.");
     note.font = [UIFont systemFontOfSize:13]; note.textColor = [UIColor colorWithWhite:0.6 alpha:1];
@@ -139,12 +148,16 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     return image ?: [UIImage imageNamed:@"AppIcon"] ?: [UIImage systemImageNamed:@"gamecontroller.fill"];
 }
 
-- (BOOL)custom { return [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_CUSTOM_PICTURE"]; }
+- (BOOL)custom { return !_hasResolution && [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_CUSTOM_PICTURE"]; }
 
 /* Show the settings as they are now; a row the player changed on this screen keeps the player's choice. */
 - (void)reload {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
-    if (!_pictureSet) _picture.selectedSegmentIndex = ![d boolForKey:@"TOTK_DOCKED"] ? 0 : _hasScene && [[d stringForKey:@"TOTK_BOTW_SCENE"] isEqualToString:@"1920x1080"] ? 2 : 1;
+    if (!_pictureSet && !_hasResolution) _picture.selectedSegmentIndex = ![d boolForKey:@"TOTK_DOCKED"] ? 0 : _hasScene && [[d stringForKey:_sceneKey] isEqualToString:@"1920x1080"] ? 2 : 1;
+    if (!_pictureSet && _hasResolution) {
+        NSString *size = [d stringForKey:@"TOTK_OUTPUT_RES"] ?: @"960x540";
+        _picture.selectedSegmentIndex = [size isEqualToString:@"960x540"] ? 0 : [size isEqualToString:@"1280x720"] ? 1 : [size isEqualToString:@"1920x1080"] ? 2 : 3;
+    }
     if (!_fpsSet) { NSString *f = [d stringForKey:@"TOTK_PHONE_FPS"]; _fps.selectedSegmentIndex = [f isEqualToString:@"30"] ? 0 : [f isEqualToString:@"40"] ? 1 : 2; }
     BOOL custom = [self custom];
     _pictureRow.hidden = custom || !_hasPicture;
@@ -173,19 +186,55 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
 }
 
 - (void)picked:(UISegmentedControl *)control {
-    if (control == _picture) _pictureSet = YES; else _fpsSet = YES;
+    if (control == _picture) {
+        _pictureSet = YES;
+        if (_hasResolution) { [self resolutionChanged:control]; return; }
+    } else _fpsSet = YES;
     [self changed];
 }
 
 /* Writes only what was changed on this screen, so a value set in the Settings app meanwhile is not put back. */
 - (void)changed {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
-    if (_pictureSet) {
+    if (_pictureSet && _hasResolution) {
+        if (_picture.selectedSegmentIndex >= 0 && _picture.selectedSegmentIndex < 3)
+            [d setObject:@[@"960x540", @"1280x720", @"1920x1080"][_picture.selectedSegmentIndex] forKey:@"TOTK_OUTPUT_RES"];
+    } else if (_pictureSet) {
         [d setBool:_picture.selectedSegmentIndex >= 1 forKey:@"TOTK_DOCKED"];
         if (_hasScene && _picture.selectedSegmentIndex >= 1)   // 720p keeps the docked scene the player chose last
-            [d setObject:_picture.selectedSegmentIndex == 2 ? @"1920x1080" : @"1600x900" forKey:@"TOTK_BOTW_SCENE"];
+            [d setObject:_picture.selectedSegmentIndex == 2 ? @"1920x1080" : @"1600x900" forKey:_sceneKey];
     }
     if (_fpsSet) [d setObject:@[@"30", @"40", @"60"][(NSUInteger)MAX(0, MIN(2, _fps.selectedSegmentIndex))] forKey:@"TOTK_PHONE_FPS"];
+}
+
+- (void)resolutionChanged:(UISegmentedControl *)sender {
+    if(sender.selectedSegmentIndex!=3) { [self changed]; return; }
+    NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:T(@"自定义分辨率",@"Custom resolution")
+        message:T(@"输入宽x高，例如 960x540 或 1280x720。",@"Enter widthxheight, such as 960x540 or 1280x720.") preferredStyle:UIAlertControllerStyleAlert];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *t){
+        t.text=[d stringForKey:@"TOTK_OUTPUT_RES"] ?: @"960x540";
+        t.autocapitalizationType=UITextAutocapitalizationTypeNone;t.autocorrectionType=UITextAutocorrectionTypeNo;t.keyboardType=UIKeyboardTypeASCIICapable;
+        t.accessibilityLabel=T(@"渲染分辨率",@"Render resolution");
+    }];
+    [a addAction:[UIAlertAction actionWithTitle:T(@"取消",@"Cancel") style:UIAlertActionStyleCancel handler:^(UIAlertAction *action){
+        (void)action;NSString *s=[d stringForKey:@"TOTK_OUTPUT_RES"];
+        sender.selectedSegmentIndex=[s isEqualToString:@"960x540"]?0:[s isEqualToString:@"1280x720"]?1:[s isEqualToString:@"1920x1080"]?2:3;
+    }]];
+    [a addAction:[UIAlertAction actionWithTitle:T(@"使用",@"Use") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
+        (void)action;unsigned w,h;NSString *s=[a.textFields.firstObject.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if(!ns2_parse_resolution(s.UTF8String,&w,&h)) {
+            a.textFields.firstObject.text=@"960x540";
+            sender.selectedSegmentIndex=0;[self changed];
+            UIAlertController *error=[UIAlertController alertControllerWithTitle:T(@"分辨率格式无效",@"Invalid resolution")
+                message:T(@"请输入宽x高，每边 1–16384，例如 1280x720。已恢复 540p。",@"Use widthxheight, each 1–16384, such as 1280x720. Restored 540p.") preferredStyle:UIAlertControllerStyleAlert];
+            [error addAction:[UIAlertAction actionWithTitle:T(@"好",@"OK") style:UIAlertActionStyleDefault handler:nil]];
+            [self.window.rootViewController presentViewController:error animated:YES completion:nil];return;
+        }
+        [d setObject:[NSString stringWithFormat:@"%ux%u",w,h] forKey:@"TOTK_OUTPUT_RES"];
+        sender.selectedSegmentIndex=(w==960&&h==540)?0:(w==1280&&h==720)?1:(w==1920&&h==1080)?2:3;
+    }]];
+    [self.window.rootViewController presentViewController:a animated:YES completion:nil];
 }
 
 - (void)start {

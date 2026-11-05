@@ -1,6 +1,7 @@
 #include "game_patches.h"
 #include "aspect_patch.h"
 #include "game_version.h"
+#include "pchtxt.h"
 #include "world_survey.h"
 #include <TargetConditionals.h>
 #include <stdio.h>
@@ -134,10 +135,6 @@ typedef struct { uint64_t fmul, store; unsigned r, f; int off; int pair; } Cloth
 static const ClothInline cloth_inline[3] = {{0x82192c, 0x821928, 0, 8, 0x124, 0}, {0x822a64, 0x822a40, 0, 8, 0x124, 0},
                                             {0x83182c, 0x831830, 1, 0, 0x134, 0}};
 static const uint64_t cloth_call = 0x8222f0, cloth_update = 0x89822c;
-#elif defined(TOTK_GAME_V112)
-static const ClothInline cloth_inline[3] = {{0x9d1e64, 0x9d1e74, 0, 8, 0x104, 0}, {0x9d2d34, 0x9d2d2c, 0, 8, 0x104, 0},
-                                            {0x9e7648, 0x9e764c, 1, 0, 0x134, 0}};
-static const uint64_t cloth_call = 0x9d2774, cloth_update = 0x88a998;
 #else
 static const ClothInline cloth_inline[3] = {{0x7b5988, 0x7b598c, 0, 8, -0x40, 1}, {0x7b6b28, 0x7b6b2c, 0, 8, -0x40, 1},
                                             {0x7f5ec4, 0x7f5ed0, 1, 0, 0x114, 0}};
@@ -275,8 +272,8 @@ __attribute__((unused)) static int overlay_present(unsigned w, unsigned h, int s
     return access(path, R_OK) == 0;
 }
 /* The scene follows the canvas (after PR #1467) only where it was made for: 1.2.1 on the Mac, TOTK_RENDER_RES unset,
-   and an app that carries the scene overlays (build_app.py makes them for 1.2.1 and 1.4.3). 1.0.0 and 1.1.2 share this
-   file but get none, and an app from before (only update_runtime.py since) has none: both keep the game's own 1600x900
+   and an app that carries the scene overlays (build_app.py makes them for 1.2.1 and 1.4.3). 1.0.0 shares this
+   file but gets none, and an app from before (only update_runtime.py since) has none: both keep the game's own 1600x900
    scene and the plain overlays, as before, instead of stopping at a missing overlay (runtime/romfs.c). */
 static int scene_follows_canvas(void) {
 #if TARGET_OS_OSX && defined(TOTK_GAME_V121)
@@ -521,7 +518,7 @@ static void output_size_set(uint64_t want) {
 }
 /* The settings panel's resolution (runtime.h OUTPUT_MODE_*): 1080p, 1080p with the MetalFX output scaler, or the game's
    canvas and UI at the native size (up to the swapchain's, 2K), the same with the MetalFX output scaler up to the window (a 4K
-   screen), or 720p, a 1280x720 canvas (the scene scales with it); native 4K is the same idea at 3840x2160 when the app
+   screen), or 720p, a 1280x720 canvas (the scene scales with it), also with the MetalFX output scaler; native 4K is the same idea at 3840x2160 when the app
    carries the 4K heap overlay. All need a bigger-output start (TOTK_OUTPUT_RES=auto with the HeapDef overlay, or <w>x<h>). */
 int runtime_output_native(int mode, unsigned *w, unsigned *h) {
     if (!output_page) return 0;
@@ -534,29 +531,29 @@ int runtime_output_native(int mode, unsigned *w, unsigned *h) {
 }
 int runtime_output_modes(void) {
     if (!output_page) return 0;
-    return 1 << OUTPUT_MODE_OFF | 1 << OUTPUT_MODE_METALFX | 1 << OUTPUT_MODE_720P | 1 << OUTPUT_MODE_NATIVE | 1 << OUTPUT_MODE_NATIVE_METALFX |
+    return 1 << OUTPUT_MODE_OFF | 1 << OUTPUT_MODE_METALFX | 1 << OUTPUT_MODE_720P | 1 << OUTPUT_MODE_720P_METALFX | 1 << OUTPUT_MODE_NATIVE | 1 << OUTPUT_MODE_NATIVE_METALFX |
            (output_w >= 3840 && output_h >= 2160 ? 1 << OUTPUT_MODE_NATIVE_4K : 0);
 }
 int runtime_output_mode(void) {
     extern int mfxup_output_enabled(void);
     if (!output_page) return OUTPUT_MODE_OFF;
     uint64_t now = atomic_load((_Atomic uint64_t *)(void *)(output_page + DP_OUTPUT_SIZE));
-    if (now == pack_size(1280, 720)) return OUTPUT_MODE_720P;
+    if (now == pack_size(1280, 720)) return mfxup_output_enabled() ? OUTPUT_MODE_720P_METALFX : OUTPUT_MODE_720P;
     if (now == pack_size(3840, 2160) && !mfxup_output_enabled()) return OUTPUT_MODE_NATIVE_4K;
     if ((unsigned)now > 1920) return mfxup_output_enabled() ? OUTPUT_MODE_NATIVE_METALFX : OUTPUT_MODE_NATIVE;
     return mfxup_output_enabled() ? OUTPUT_MODE_METALFX : OUTPUT_MODE_OFF;
 }
 int runtime_output_mode_set(int mode) {
     extern void dm_gfx_set_flag(const char *name, int value);
-    if (!output_page || mode < OUTPUT_MODE_OFF || mode > OUTPUT_MODE_NATIVE_4K || !(runtime_output_modes() & 1 << mode)) return 0;
+    if (!output_page || mode < OUTPUT_MODE_OFF || mode > OUTPUT_MODE_LAST || !(runtime_output_modes() & 1 << mode)) return 0;
     unsigned w = 1920, h = 1080;
-    if (mode == OUTPUT_MODE_720P) { w = 1280; h = 720; }
+    if (mode == OUTPUT_MODE_720P || mode == OUTPUT_MODE_720P_METALFX) { w = 1280; h = 720; }
     else if (mode == OUTPUT_MODE_NATIVE || mode == OUTPUT_MODE_NATIVE_METALFX || mode == OUTPUT_MODE_NATIVE_4K) runtime_output_native(mode, &w, &h);
     output_size_set(pack_size(w, h));
-    int mfx = mode == OUTPUT_MODE_METALFX || mode == OUTPUT_MODE_NATIVE_METALFX;
+    int mfx = mode == OUTPUT_MODE_METALFX || mode == OUTPUT_MODE_NATIVE_METALFX || mode == OUTPUT_MODE_720P_METALFX;
     dm_gfx_set_flag("mfx_output", mfx);
     dm_gfx_set_flag("mfx_upscale", mfx);
-    fprintf(stderr, "[totk] picture: %s\n", mode == OUTPUT_MODE_720P ? "720p" : mode == OUTPUT_MODE_NATIVE_4K ? "native 4K" :
+    fprintf(stderr, "[totk] picture: %s\n", mode == OUTPUT_MODE_720P ? "720p" : mode == OUTPUT_MODE_720P_METALFX ? "720p, MetalFX to the window" : mode == OUTPUT_MODE_NATIVE_4K ? "native 4K" :
             mode == OUTPUT_MODE_NATIVE_METALFX ? "native 2K, MetalFX to the window" :
             mode == OUTPUT_MODE_NATIVE ? "native" :
             mode == OUTPUT_MODE_METALFX ? "MetalFX 2K" : "off (1080p)");
@@ -589,64 +586,9 @@ static void check_site(const Module *m, const GamePatch *p) {
     }
 }
 
-/* TOTK_PCHTXT=<file>: an emulator ExeFS patch for main in pchtxt form, as community mods ship them (for example
-   TOTK-Ultrawide's aspect-ratio patch), for trying them here. Mac only: the phone's code is patched at build. Its
-   @nsobid must be main's build id, read from the extracted ExeFS (extracted/<version>/exefs/main at 0x40); the lines
-   after @enabled are "<main address> <bytes>", @disabled switches the lines that follow off again (a section the author
-   keeps without applying it) and @stop ends the file. "@flag offset_shift 0x100" must come before the first patch line:
-   it says the addresses leave out the NSO header only the IPS form counts, which is how they are applied here; a file
-   without it, or with another shift, would land 0x100 bytes off and stops the start. "@flag print_values" (a display
-   option of the patching tools) is accepted, any other flag stops the start. The same reading as the build's --mod
-   (scripts/mod_exefs.py). It is applied before this runtime's own patches, whose checks of the original words then
-   refuse a file that overlaps them. */
-static void patch_pchtxt(Module *m) {
-    const char *path = getenv("TOTK_PCHTXT");
-    if (!path || !*path) return;
-    FILE *f = fopen(path, "r");
-    if (!f) runtime_fail("TOTK_PCHTXT: cannot open the file");
-    char nso[256], want[41] = {0}; uint8_t id[20];
-    snprintf(nso, sizeof nso, "extracted/%s/exefs/main", TOTK_GAME_DIR);
-    FILE *n = fopen(nso, "rb");
-    if (n) {
-        if (fseek(n, 0x40, SEEK_SET) || fread(id, 1, sizeof id, n) != sizeof id) runtime_fail("TOTK_PCHTXT: cannot read main's build id from extracted/<version>/exefs/main");
-        fclose(n);
-        for (int i = 0; i < 20; i++) snprintf(want + 2 * i, 3, "%02X", id[i]);
-    } else {
-        snprintf(nso, sizeof nso, "extracted/%s/exefs/main.build-id", TOTK_GAME_DIR);
-        FILE *b = fopen(nso, "r");
-        if (!b || fscanf(b, "%40[0-9A-Fa-f]", want) != 1 || strlen(want) != 40) runtime_fail("TOTK_PCHTXT: cannot read main's build id from extracted/<version>/exefs/main or main.build-id");
-        fclose(b);
-    }
-    char line[1024]; int enabled = 0, matched = 0, shifted = 0; unsigned count = 0, bytes = 0;
-    while (fgets(line, sizeof line, f)) {
-        if (!strncmp(line, "@nsobid-", 8)) {
-            if (strncasecmp(line + 8, want, 40)) runtime_fail("TOTK_PCHTXT is for another build of main");
-            matched = 1; continue;
-        }
-        if (!strncmp(line, "@enabled", 8)) { enabled = 1; continue; }
-        if (!strncmp(line, "@disabled", 9)) { enabled = 0; continue; }
-        if (!strncmp(line, "@flag", 5)) {
-            char name[64] = "", value[64] = "";
-            sscanf(line + 5, "%63s %63s", name, value);
-            if (!strcmp(name, "print_values")) continue;
-            if (strcmp(name, "offset_shift")) runtime_fail("TOTK_PCHTXT: only @flag offset_shift 0x100 and print_values are supported");
-            if (strtoull(value, NULL, 16) != 0x100) runtime_fail("TOTK_PCHTXT: @flag offset_shift must be 0x100 (the addresses are main addresses)");
-            shifted = 1; continue;
-        }
-        if (!strncmp(line, "@stop", 5)) break;
-        unsigned long long at; char hex[512];
-        if (!enabled || line[0] == '@' || sscanf(line, "%llx %511s", &at, hex) != 2) continue;
-        size_t len = strlen(hex);
-        if (!matched) runtime_fail("TOTK_PCHTXT: patches before its @nsobid line");
-        if (!shifted) runtime_fail("TOTK_PCHTXT: no @flag offset_shift 0x100 before the first patch line");
-        if (len % 2 || at + len / 2 > m->file_size) runtime_fail("TOTK_PCHTXT: a patch line is malformed or outside main");
-        for (size_t i = 0; i < len / 2; i++) { unsigned v; sscanf(hex + 2 * i, "%2x", &v); m->base[at + i] = (uint8_t)v; }
-        count++; bytes += (unsigned)(len / 2);
-    }
-    fclose(f);
-    if (!matched) runtime_fail("TOTK_PCHTXT has no @nsobid line");
-    fprintf(stderr, "[totk] TOTK_PCHTXT %s: %u patches, %u bytes in main (build id %s)\n", path, count, bytes, want);
-}
+/* TOTK_PCHTXT=<file> (runtime/pchtxt.h, the reader both games share): this runtime's own patches check the original
+   words they replace, so they refuse a file that overlaps them; no further sites are reserved. */
+static void patch_pchtxt(Module *m) { pchtxt_apply(m, "totk", NULL, 0); }
 
 /* High frame rates (#61, sky-island trampolines): main+0xce3fec (1.0.0) compares X+0x28 with 100 and, when greater,
    scales the velocity Link takes over from the ground body by 0.1. X is the game's time object ([GOT]+0xc8; X+0x38 the
@@ -859,17 +801,14 @@ static void patch_boot_race(Module *m) {
    texture past 2 GiB then got a negative offset: storage and source 4 GiB below the pool, in the stack region or other
    memory (refused uploads, garbage textures, a SIGBUS in ReadTexels, one in the packaged-data copy). It was the only pool
    over 2 GiB (the next is 252 MiB). Both now widen the offset unsigned, which covers a pool of up to 4 GiB.
-   Sites mapped with scripts/map_version_sites.py --from v121 (1.0.0: the same words); 1.1.2 is not mapped yet (no image
-   here) and stays as shipped; 1.4.3 has its own patch source (game_patches_v143.c) and is not covered. TOTK_POOL_OFFSET_PATCH=0 leaves them as shipped too. */
+   Sites mapped with scripts/map_version_sites.py --from v121 (1.0.0: the same words);
+   1.4.3 has its own patch source (game_patches_v143.c) and is not covered. TOTK_POOL_OFFSET_PATCH=0 leaves them as shipped too. */
 static void patch_pool_offset(Module *m) {
 #if defined(TOTK_GAME_V121)
     static const uint64_t sites[] = {0xad43f0, 0xad440c};
-#elif defined(TOTK_GAME_V112)
-    static const uint64_t *const sites = NULL;   /* not mapped */
 #else
     static const uint64_t sites[] = {0xa7d320, 0xa7d33c};
 #endif
-#if !defined(TOTK_GAME_V112)
     const char *e = getenv("TOTK_POOL_OFFSET_PATCH");   /* the Mac only: an iPhone / iPad build ships the code already patched */
     if (!CODE_PATCHED_AT_BUILD && e && !strcmp(e, "0")) { fprintf(stderr, "[totk] %s texture pool offsets: as shipped (TOTK_POOL_OFFSET_PATCH=0)\n", TOTK_GAME_VERSION); return; }
     const struct { uint64_t site; uint32_t original, replacement; const char *what; } words[] = {
@@ -886,10 +825,6 @@ static void patch_pool_offset(Module *m) {
     for (unsigned i = 0; i < 2; i++) put_word(m, words[i].site, words[i].replacement, "texture pool offset");
     fprintf(stderr, "[totk] %s texture pool offsets: widened unsigned at main+%#llx and main+%#llx\n", TOTK_GAME_VERSION,
             (unsigned long long)words[0].site, (unsigned long long)words[1].site);
-#else
-    (void)m; (void)sites;
-    fprintf(stderr, "[totk] %s texture pool offsets: as shipped (the loader's sites are not mapped for this version)\n", TOTK_GAME_VERSION);
-#endif
 }
 
 void runtime_game_patches(Module *m) {
