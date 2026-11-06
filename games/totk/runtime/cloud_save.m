@@ -295,14 +295,23 @@ void runtime_cloud_save_start(const char *save_dir, const char *profile_dir) {
         BOOL superseded = state[@"superseded"] && cloudGen >= [state[@"superseded"] longLongValue];
         double cloudTime = [meta[@"time"] doubleValue], localTime = localSaves ? newest_mtime(g_local) : 0;
         if (localChanged && !superseded && localTime > cloudTime) { LOG("both saved; this device's save is newer\n"); push(); return; }
-        if (!ensure_downloaded(cur, 60)) { LOG("the folder's save did not download in time; this device's save is used\n"); return; }
+        /* The folder's save is the one to take. When it cannot be taken now (not downloaded, incomplete, the backup or the
+           copy failed), this device plays its own save but never uploads it this session: an upload would replace the
+           newer save it could not read (2026-11-06: a Mac start that timed out on a phone's upload put its older save
+           over it). Its next start takes the folder's save, keeping this one in cloud-backups. */
+        __block BOOL taken = NO;
+        if (!ensure_downloaded(cur, 60)) LOG("the folder's save did not download in time; this device's save is used\n");
         /* Checked and copied in one coordinated read, so an upload arriving meanwhile cannot slip between the two. */
-        read_coordinated(cur, ^(NSString *p) {
+        else read_coordinated(cur, ^(NSString *p) {
             NSDictionary *m = read_cloud_meta([p stringByAppendingPathComponent:@"sync.plist"]);
             if (![m[@"gen"] isEqual:meta[@"gen"]] || ![save_hash(p) isEqualToString:m[@"hash"]]) { LOG("the folder's save is incomplete (still syncing); this device's save is used\n"); return; }
             if (localSaves && !backup(g_local, @"local")) return;
-            if (replace_folder(p, g_local)) { write_state(m[@"gen"], m[@"hash"]); LOG("loaded the save from %s (generation %lld)\n", [m[@"device"] UTF8String], [m[@"gen"] longLongValue]); }
+            if (replace_folder(p, g_local)) { taken = YES; write_state(m[@"gen"], m[@"hash"]); LOG("loaded the save from %s (generation %lld)\n", [m[@"device"] UTF8String], [m[@"gen"] longLongValue]); }
         });
+        if (!taken && !g_identity_conflict) {
+            g_superseded = 1; write_superseded(state, meta[@"gen"]);
+            LOG("the folder's newer save (generation %lld) is not loaded: this device's saves stay local this time, and its next start takes that one\n", cloudGen);
+        }
     }
 }
 

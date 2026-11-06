@@ -79,3 +79,23 @@ class CloudSave(unittest.TestCase):
             self.assertEqual({str(p.relative_to(cloud)): p.read_bytes() for p in cloud.rglob('*') if p.is_file()}, before)
             self.assertFalse((other / 'cloud-sync').exists())
             self.assertFalse((other / 'cloud-backups').exists())
+
+    def test_newer_save_that_cannot_load_is_never_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); cloud, profile = root / 'cloud', root / 'profile'
+            self.run_save(cloud, profile, A, 'push')
+            current = cloud / f'Users/{A}/Saves/current'
+            good = (current / 'progress.sav').read_bytes()
+            (current / 'progress.sav').write_bytes(b'half')   # still syncing: the files do not match sync.plist's hash
+            other = root / 'other'
+            run = subprocess.run([str(self.exe), str(cloud), str(other), A, 'mismatch'],
+                                 capture_output=True, text=True, timeout=30)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn('stay local this time', run.stderr)
+            self.assertEqual((current / 'progress.sav').read_bytes(), b'half')
+            self.assertEqual(plistlib.loads((current / 'sync.plist').read_bytes())['gen'], 1)
+            (current / 'progress.sav').write_bytes(good)   # the download finished
+            self.run_save(cloud, other, A, 'pull')
+            self.assertEqual((other / f'save/{A}/progress.sav').read_bytes(), good)
+            backups = list((other / f'cloud-backups/{A}').glob('*/progress.sav'))
+            self.assertEqual([b.read_text() for b in backups], ['local copy'])
