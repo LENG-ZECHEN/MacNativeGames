@@ -808,7 +808,13 @@ static unsigned fullScreenWatch;
 static int fullScreenAgain,fullScreenAgainCount;
 static void front_fullscreen_again(int tries){
  if(window.styleMask&NSWindowStyleMaskFullScreen)return;
- if(atomic_load(&presentedFrames)&&(window.occlusionState&NSWindowOcclusionStateVisible)&&NSApp.isActive&&!fullScreenMoving){
+ /* Left full screen, the window can still be off screen (16:26: covered until the player switched back 12 s later): bring
+    the game to the front and order the window in, once. */
+ if(!(window.occlusionState&NSWindowOcclusionStateVisible)&&tries==0){   /* once (user 2026-11-06): the player may switch away after */
+  fprintf(stderr,"[totk] full screen: left; bringing the window to the front\n");
+  [NSApp activateIgnoringOtherApps:YES];[window makeKeyAndOrderFront:nil];[window orderFrontRegardless];
+ }
+ if(atomic_load(&presentedFrames)&&(window.occlusionState&NSWindowOcclusionStateVisible)&&!fullScreenMoving){
   fprintf(stderr,"[totk] full screen: entering it again (%.3f s after the start)\n",(runtime_now_ns()-bootStartNS)/1e9);
   [window toggleFullScreen:nil];return;
  }
@@ -819,7 +825,7 @@ static void front_fullscreen_left(void){
  if(!fullScreenAgain)return;
  fullScreenAgain=0;
  if(++fullScreenAgainCount>2){fprintf(stderr,"[totk] full screen: left twice already; the green button enters it again\n");return;}
- dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{front_fullscreen_again(0);});
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.3*NSEC_PER_SEC)),dispatch_get_main_queue(),^{front_fullscreen_again(0);});
 }
 static void front_fullscreen_watch(const char *what,double wait){
  unsigned gen=++fullScreenWatch;
