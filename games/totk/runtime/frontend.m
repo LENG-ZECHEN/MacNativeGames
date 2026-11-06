@@ -22,12 +22,10 @@
 #include "../third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
 static NSWindow *window;
 /* A full-screen transition is running (windowWill{Enter,Exit}FullScreen until it ends): the game does not resize the window
-   then. A resize in the middle of the animation (the settings' window size for the resolution, 0.2 s into a start) left a
-   black full-screen Space with the window "covered" (user 2026-11-06: full screen right after opening went black). */
+   then, as the settings' restore (the window size for the resolution) would in a start that enters full screen at once. */
 static int fullScreenMoving;
 static int fullScreenWhenFront;   /* the game enters full screen once it shows and is in front (front_fullscreen_enter) */
-static void front_fullscreen_watch(const char *what,double wait);   /* below */
-static void front_fullscreen_left(void);   /* below */
+static void front_fullscreen_log(const char *what);   /* below */
 static int front_start_fullscreen_wanted(void);   /* below */
 static void front_fullscreen_enter(const char *why);   /* below */
 static void front_fullscreen_front(void);   /* below */
@@ -795,12 +793,12 @@ static void front_guard_notice(void){
   fprintf(stderr,"[totk] save %s after %.2f s; quitting\n",runtime_fs_save_busy()?"still in progress (gave up)":"done",(runtime_now_ns()-t0)/1e9);runtime_cloud_save_quit();_exit(0);});
 }
 -(void)windowDidResize:(NSNotification *)n{(void)n;front_sync_drawable();}
--(void)windowWillEnterFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=1;front_present_blank();front_fullscreen_watch("starts",3.0);}
+-(void)windowWillEnterFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=1;front_present_blank();front_fullscreen_log("starts");}
 -(void)windowWillExitFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=1;}
 -(void)windowDidFailToEnterFullScreen:(NSWindow *)w{(void)w;fullScreenMoving=0;}
 -(void)windowDidFailToExitFullScreen:(NSWindow *)w{(void)w;fullScreenMoving=0;}
--(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=0;front_present_blank();front_fullscreen_watch("done",1.0);[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];front_sr_view();}
--(void)windowDidExitFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=0;front_fullscreen_left();[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_sr_view();}
+-(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=0;front_present_blank();front_fullscreen_log("done");[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];front_sr_view();}
+-(void)windowDidExitFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=0;front_fullscreen_log("left");[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_sr_view();}
 -(void)windowDidChangeScreen:(NSNotification *)n{(void)n;note_window_screen();front_sr_view();front_hdr_update();}
 /* Whether any part of the window can be seen (TOTK, 2026-10-16 night): macOS stops the display link's callbacks for a
    fully covered window, so presents stop and per-picture measurements of that stretch are void; a test session's log
@@ -814,22 +812,15 @@ static void note_occlusion(const char *when){int v=(window.occlusionState&NSWind
 @end
 static TOTKWindowDelegate *windowDelegate;
 int runtime_front_window_visible(void){return atomic_load(&windowVisible);}
-/* Full screen that never shows the window (user 2026-11-06): macOS made the full-screen Space and ended its animation,
-   but left the game's window off it ("none" in WindowServer's log), so the Space stayed black while the game drew on. A
-   normal entry shows the window some 50 ms after the animation. It happened when the game was not in front during the
-   entry (16:37: a trackpad swipe to another Space just before), and in the first seconds of a start. macOS then neither
-   shows the window nor lets the game bring itself to the front (ordering it in, activating: no effect); a click on it
-   does, and leaving full screen and entering it again while the game is in front shows it. So:
-   - full screen is entered by the game (the start, again after leaving) only with the game in front, else when it is;
-   - a window not shown a while after the transition, with the game in front, leaves full screen and enters it again
-     (at most twice per start); with the game elsewhere it waits until the game is in front again.
-   TOTK_TEST_FULLSCREEN_HIDE=1 (tests): the window is ordered out once full screen is done, on the first entry. */
-static unsigned fullScreenWatch;
-static int fullScreenAgain,fullScreenAgainCount;
+/* Full screen and the start (user 2026-11-06). macOS puts a window on its full-screen Space only once the window has drawn
+   at the new size (front_present_blank covers the warm-up, before the game's first frame), and only while the game is in
+   front: entered with the game elsewhere (a trackpad swipe to another Space during the start), the Space stays black
+   until the player clicks the game, and the game cannot bring itself to the front. So the game enters full screen itself
+   only while it is in front and its window shows, else as soon as that holds. */
 /* Full screen or the window at the start: the way the last session ended (window-mode.txt beside the other settings,
-   "fullscreen" / "window"; full screen when there is none yet, user 2026-11-06). TOTK_START_FULLSCREEN=1 / 0 decides
-   instead (the launcher sets 0 for a test start with its own TOTK_PROFILE_DIR); test windows (TOTK_WINDOW_SIZE,
-   TOTK_WINDOW_FLOAT) stay windows. */
+   "fullscreen" / "window"; full screen when there is none yet). TOTK_START_FULLSCREEN=1 / 0 decides instead (the
+   launcher sets 0 for a test start with its own TOTK_PROFILE_DIR); test windows (TOTK_WINDOW_SIZE, TOTK_WINDOW_FLOAT)
+   stay windows. */
 static int front_start_fullscreen_wanted(void){
  if(getenv("TOTK_WINDOW_SIZE")||getenv("TOTK_WINDOW_FLOAT"))return 0;
  const char *e=getenv("TOTK_START_FULLSCREEN");if(e&&*e)return strcmp(e,"0")!=0;
@@ -837,16 +828,12 @@ static int front_start_fullscreen_wanted(void){
  return 1;
 }
 static int front_in_front(void){return NSApp.isActive&&window.isKeyWindow;}
-/* The game enters full screen: now, when the window shows and the game is in front (and, but at the start, a frame has
-   been presented); else as soon as that holds (windowDidBecomeKey, a visible window). The start enters it with the window
-   (user 2026-11-06: full screen already while the shaders warm up); an entry that early can still leave the Space
-   black, and the watch then leaves it and enters it again after the first frame. */
 static void front_fullscreen_enter(const char *why){
  if(!window||(window.styleMask&NSWindowStyleMaskFullScreen)){fullScreenWhenFront=0;return;}
- if(fullScreenMoving||(!atomic_load(&presentedFrames)&&strcmp(why,"the start, as the last session ended"))||!front_in_front()||!(window.occlusionState&NSWindowOcclusionStateVisible)){
-  if(!fullScreenWhenFront)fprintf(stderr,"[totk] full screen (%s): waiting until the game shows and is in front\n",why);
+ if(fullScreenMoving||!front_in_front()||!(window.occlusionState&NSWindowOcclusionStateVisible)){
+  if(!fullScreenWhenFront)fprintf(stderr,"[totk] full screen (%s): waiting until the game is in front\n",why);
   fullScreenWhenFront=1;
-  /* checked twice a second too: a window that shows again does not always say so (no occlusion change, 16:46) */
+  /* also checked twice a second: a window that shows again does not always report it */
   {const char *w=why;dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{if(fullScreenWhenFront)front_fullscreen_enter(w);});}
   return;
  }
@@ -854,42 +841,11 @@ static void front_fullscreen_enter(const char *why){
  fprintf(stderr,"[totk] full screen (%s): entering it (%.3f s after the start)\n",why,(runtime_now_ns()-bootStartNS)/1e9);
  [window toggleFullScreen:nil];
 }
-static void front_fullscreen_leave_and_again(const char *why){
- if(fullScreenAgainCount>=2){fprintf(stderr,"[totk] full screen: %s, but it was entered again twice already; the green button enters it\n",why);return;}
- fullScreenAgainCount++;
- fprintf(stderr,"[totk] full screen: %s; leaving it, to enter it again\n",why);
- fullScreenAgain=1;[window toggleFullScreen:nil];
-}
-static void front_fullscreen_left(void){
- if(!fullScreenAgain)return;
- fullScreenAgain=0;
- dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.3*NSEC_PER_SEC)),dispatch_get_main_queue(),^{front_fullscreen_enter("again");});
-}
-/* The game is in front again (windowDidBecomeKey) or its window shows (note_occlusion). */
-static int fullScreenNotShown;   /* the watch saw full screen without the window while the game was elsewhere */
+/* The game is in front again (windowDidBecomeKey) or its window shows (note_occlusion): an entry that waited goes ahead. */
 static void front_fullscreen_front(void){
  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.3*NSEC_PER_SEC)),dispatch_get_main_queue(),^{if(fullScreenWhenFront)front_fullscreen_enter("waited");});
- /* Only after such a sighting, and after the switch to the Space has had its time: a window just switched back to is
-    not visible for a moment (16:49, a test's switch to the game read as a black full screen). */
- if(!fullScreenNotShown)return;
- dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
-  if(!(window.styleMask&NSWindowStyleMaskFullScreen)||fullScreenMoving||!front_in_front())return;
-  fullScreenNotShown=0;
-  if(window.occlusionState&NSWindowOcclusionStateVisible)return;
-  front_fullscreen_leave_and_again("the window is not shown on its Space now the game is in front");
- });
 }
-static void front_fullscreen_watch(const char *what,double wait){
- unsigned gen=++fullScreenWatch;
- fprintf(stderr,"[totk] full screen %s (%.3f s after the start)\n",what,(runtime_now_ns()-bootStartNS)/1e9);
- {static int hidden;const char *t=getenv("TOTK_TEST_FULLSCREEN_HIDE");if(!hidden&&t&&!strcmp(t,"1")&&!strcmp(what,"done")){hidden=1;
-   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.2*NSEC_PER_SEC)),dispatch_get_main_queue(),^{fprintf(stderr,"[totk] test: window ordered out in full screen\n");[window orderOut:nil];});}}
- dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(wait*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
-  if(gen!=fullScreenWatch||!(window.styleMask&NSWindowStyleMaskFullScreen)||fullScreenMoving||(window.occlusionState&NSWindowOcclusionStateVisible))return;
-  if(!front_in_front()){fullScreenNotShown=1;fprintf(stderr,"[totk] full screen: the window is not shown, and the game is not in front: waiting until it is\n");return;}
-  front_fullscreen_leave_and_again("the window is not shown on its Space");
- });
-}
+static void front_fullscreen_log(const char *what){fprintf(stderr,"[totk] full screen %s (%.3f s after the start)\n",what,(runtime_now_ns()-bootStartNS)/1e9);}
 void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(), ^{[window performClose:nil];});}
 /* Save sync (runtime/cloud_save.m): the folder the saves are copied to, e.g. an iCloud Drive folder shared with the
    iPhone / iPad or another Apple ID. Stored in RUNTIME_SAVE_SYNC_DEFAULTS (TOTK_CLOUD_SAVE_FOLDER, read by app/launcher.m)

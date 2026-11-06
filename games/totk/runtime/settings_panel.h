@@ -283,9 +283,9 @@ static void settings_restore_begin(void) {
  }
 }
 /* The window's first size: the one settings_restore_ready gives it a moment later (the saved resolution and picture ratio),
-   so the window appears at that size instead of being resized just after it shows. A click on the green button right
-   after that resize left full screen black (user 2026-11-06). 0 when the saved settings do not settle it before the game
-   runs (no saved ratio, the native mode whose size the game gives, an override in the environment). */
+   so the window appears at that size instead of being resized just after it shows, and a start that enters full screen
+   at once (settings_window_size does not resize in full screen) has it when it leaves. 0 when the saved settings do not
+   settle it before the game runs (no saved ratio, the native mode whose size the game gives, an override). */
 static int settings_start_window_size(NSRect visible,NSWindowStyleMask mask,CGFloat *ww,CGFloat *wh) {
  const char *output=getenv("TOTK_OUTPUT_RES");int v;char word[32],*end;
  if(getenv("TOTK_WINDOW_SIZE")||getenv("TOTK_ASPECT")||(output&&*output&&strcmp(output,"auto"))||getenv("TOTK_MFX_OUTPUT")||getenv("TOTK_MFX_UPSCALE"))return 0;
