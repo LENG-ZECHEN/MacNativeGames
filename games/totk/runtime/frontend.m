@@ -26,6 +26,7 @@ static NSWindow *window;
 static int fullScreenMoving;
 static int fullScreenWhenFront;   /* the game enters full screen once it shows and is in front (front_fullscreen_enter) */
 static void front_fullscreen_log(const char *what);   /* below */
+static void front_fullscreen_nudge(void);   /* below */
 static int front_start_fullscreen_wanted(void);   /* below */
 static void front_fullscreen_enter(const char *why);   /* below */
 static void front_fullscreen_front(void);   /* below */
@@ -710,24 +711,45 @@ static void front_sr_view(void){
  totk_sr_view((int)px.width,(int)px.height,window.screen?(int)window.screen.maximumFramesPerSecond:0,(window.styleMask&NSWindowStyleMaskFullScreen)!=0);
 }
 static void front_sr_window(void){if(totk_sr_window&&window)totk_sr_window(window.isKeyWindow,runtime_front_window_visible()!=0);}
-/* Before the game's first frame the Metal layer has nothing in it (the start-up screen is a view above it). A window then
-   entered full screen, during the warm-up, was never put on the full-screen Space: the Space stayed black until a frame
-   came (user 2026-11-06: "in full screen during the warm-up it is black"). Each new drawable size before the first frame,
-   and the start of a full-screen transition, gets one frame of the start-up screen's colour. */
-static void front_present_blank(void){
- if(!metalLayer||atomic_load(&presentedFrames))return;
- static id<MTLCommandQueue> queue;if(!queue)queue=[metalLayer.device newCommandQueue];if(!queue)return;
- id<CAMetalDrawable> d=[metalLayer nextDrawable];if(!d)return;
- MTLRenderPassDescriptor *rp=[MTLRenderPassDescriptor renderPassDescriptor];
- rp.colorAttachments[0].texture=d.texture;rp.colorAttachments[0].loadAction=MTLLoadActionClear;rp.colorAttachments[0].storeAction=MTLStoreActionStore;
- rp.colorAttachments[0].clearColor=MTLClearColorMake(0.035,0.075,0.09,1);
- id<MTLCommandBuffer> cb=[queue commandBuffer];[[cb renderCommandEncoderWithDescriptor:rp] endEncoding];[cb presentDrawable:d];[cb commit];
+/* The start-up screen in the Metal layer, the way the game's frames come (user 2026-11-06). Before the game's first frame
+   the layer had nothing in it, or (2026-11-06 afternoon) a single frame when the drawable changed size: full screen
+   entered then sometimes never put the window on its Space (black until a click), while in the game, where frames come
+   all the time, it never failed. So from the window's start the start-up screen's colour is presented every display
+   frame (60 Hz, on its own queue: nextDrawable can wait), until the game presents its first frame; the start-up texts
+   and progress bar stay views above the layer. */
+static dispatch_queue_t bootFramesQueue;static dispatch_source_t bootFrames;static _Atomic int bootFramesOn;
+/* gfx/nvn/nvn_mtl.m, before the game takes the layer (its first nextDrawable, its CAMetalDisplayLink, which makes another
+   nextDrawable throw: a start-up frame then ended the game, 2026-11-06 17:58): no start-up frame after this returns. */
+void front_boot_frames_stop(void){
+ if(!atomic_exchange(&bootFramesOn,0))return;
+ dispatch_sync(bootFramesQueue,^{if(bootFrames){dispatch_source_cancel(bootFrames);bootFrames=nil;}});
+}
+static void front_boot_frames(void){
+ if(!metalLayer||bootFramesQueue)return;
+ id<MTLCommandQueue> queue=[metalLayer.device newCommandQueue];if(!queue)return;
+ bootFramesQueue=dispatch_queue_create("totk.boot-frames",dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL,QOS_CLASS_USER_INTERACTIVE,0));
+ dispatch_source_t timer=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,bootFramesQueue);bootFrames=timer;
+ dispatch_source_set_timer(timer,dispatch_time(DISPATCH_TIME_NOW,0),NSEC_PER_SEC/60,NSEC_PER_SEC/600);
+ __block uint64_t n=0;
+ dispatch_source_set_cancel_handler(timer,^{fprintf(stderr,"[totk] start-up frames: %llu, until the game took the layer\n",(unsigned long long)n);});
+ atomic_store(&bootFramesOn,1);
+ dispatch_source_set_event_handler(timer,^{
+  if(!bootFrames||!atomic_load(&bootFramesOn)||atomic_load(&presentedFrames))return;
+  @autoreleasepool{
+   id<CAMetalDrawable> d=[metalLayer nextDrawable];if(!d)return;
+   MTLRenderPassDescriptor *rp=[MTLRenderPassDescriptor renderPassDescriptor];
+   rp.colorAttachments[0].texture=d.texture;rp.colorAttachments[0].loadAction=MTLLoadActionClear;rp.colorAttachments[0].storeAction=MTLStoreActionStore;
+   rp.colorAttachments[0].clearColor=MTLClearColorMake(0.035,0.075,0.09,1);
+   id<MTLCommandBuffer> cb=[queue commandBuffer];[[cb renderCommandEncoderWithDescriptor:rp] endEncoding];[cb presentDrawable:d];[cb commit];n++;
+  }
+ });
+ dispatch_resume(timer);
 }
 static void front_sync_drawable(void){
  NSView *v=window.contentView;if(!v||!metalLayer)return;
  CGFloat s=window.backingScaleFactor>0?window.backingScaleFactor:1,ts=drawable_scale();CGSize px=CGSizeMake(round(v.bounds.size.width*s*ts),round(v.bounds.size.height*s*ts));
  if(px.width<1||px.height<1||CGSizeEqualToSize(metalLayer.drawableSize,px))return;
- metalLayer.contentsScale=s;metalLayer.drawableSize=px;fprintf(stderr,"[totk] window drawable %.0fx%.0f (scale %.0f)\n",px.width,px.height,s);runtime_aspect_view(px.width,px.height);front_present_blank();
+ metalLayer.contentsScale=s;metalLayer.drawableSize=px;fprintf(stderr,"[totk] window drawable %.0fx%.0f (scale %.0f)\n",px.width,px.height,s);runtime_aspect_view(px.width,px.height);
  front_sr_view();
 }
 /* BotW, the settings panel's aspect ratio: the window takes the selected camera ratio. Keep the chosen height across toggles, even when a wide
@@ -793,11 +815,11 @@ static void front_guard_notice(void){
   fprintf(stderr,"[totk] save %s after %.2f s; quitting\n",runtime_fs_save_busy()?"still in progress (gave up)":"done",(runtime_now_ns()-t0)/1e9);runtime_cloud_save_quit();_exit(0);});
 }
 -(void)windowDidResize:(NSNotification *)n{(void)n;front_sync_drawable();}
--(void)windowWillEnterFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=1;front_present_blank();front_fullscreen_log("starts");}
+-(void)windowWillEnterFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=1;front_fullscreen_log("starts");front_fullscreen_nudge();}
 -(void)windowWillExitFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=1;}
 -(void)windowDidFailToEnterFullScreen:(NSWindow *)w{(void)w;fullScreenMoving=0;}
 -(void)windowDidFailToExitFullScreen:(NSWindow *)w{(void)w;fullScreenMoving=0;}
--(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=0;front_present_blank();front_fullscreen_log("done");[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];front_sr_view();}
+-(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=0;front_fullscreen_log("done");front_fullscreen_nudge();[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];front_sr_view();}
 -(void)windowDidExitFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=0;front_fullscreen_log("left");[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_sr_view();}
 -(void)windowDidChangeScreen:(NSNotification *)n{(void)n;note_window_screen();front_sr_view();front_hdr_update();}
 /* Whether any part of the window can be seen (TOTK, 2026-10-16 night): macOS stops the display link's callbacks for a
@@ -813,7 +835,7 @@ static void note_occlusion(const char *when){int v=(window.occlusionState&NSWind
 static TOTKWindowDelegate *windowDelegate;
 int runtime_front_window_visible(void){return atomic_load(&windowVisible);}
 /* Full screen and the start (user 2026-11-06). macOS puts a window on its full-screen Space only once the window has drawn
-   at the new size (front_present_blank covers the warm-up, before the game's first frame), and only while the game is in
+   at the new size (front_boot_frames keeps frames coming before the game's first one), and only while the game is in
    front: entered with the game elsewhere (a trackpad swipe to another Space during the start), the Space stays black
    until the player clicks the game, and the game cannot bring itself to the front. So the game enters full screen itself
    only while it is in front and its window shows, else as soon as that holds. */
@@ -846,6 +868,15 @@ static void front_fullscreen_front(void){
  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.3*NSEC_PER_SEC)),dispatch_get_main_queue(),^{if(fullScreenWhenFront)front_fullscreen_enter("waited");});
 }
 static void front_fullscreen_log(const char *what){fprintf(stderr,"[totk] full screen %s (%.3f s after the start)\n",what,(runtime_now_ns()-bootStartNS)/1e9);}
+/* A full-screen entry whose window stayed off the Space until the next input event (2026-11-06 17:53: the window showed
+   9 s after the animation, at a touch on the trackpad; earlier at a click, or a switch away and back). The game posts
+   itself a few empty application events during and after the transition, so AppKit's last step runs without one. */
+static void front_fullscreen_nudge(void){
+ for(int i=1;i<=6;i++)dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(i*0.25*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+  NSEvent *e=[NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:window.windowNumber context:nil subtype:0x7f data1:0 data2:0];
+  if(e)[NSApp postEvent:e atStart:NO];
+ });
+}
 void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(), ^{[window performClose:nil];});}
 /* Save sync (runtime/cloud_save.m): the folder the saves are copied to, e.g. an iCloud Drive folder shared with the
    iPhone / iPad or another Apple ID. Stored in RUNTIME_SAVE_SYNC_DEFAULTS (TOTK_CLOUD_SAVE_FOLDER, read by app/launcher.m)
@@ -1043,16 +1074,7 @@ void runtime_front_run(void(*callback)(void)){
   front_sr_view();
   [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){(void)n;note_window_screen();front_sr_view();}];   /* a refresh rate changed on the same screen */
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{note_occlusion(" 3 s after opening");});
-  /* DIAG (2026-11-06, temporary): the main thread's stalls over 50 ms in the first 20 s, against the full-screen steps */
-  {dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
-    while((runtime_now_ns()-bootStartNS)<20000000000ull){
-     __block _Atomic int done=0;uint64_t t0=runtime_now_ns();
-     dispatch_async(dispatch_get_main_queue(),^{atomic_store(&done,1);});
-     while(!atomic_load(&done))usleep(2000);
-     uint64_t ms=(runtime_now_ns()-t0)/1000000;
-     if(ms>=50)fprintf(stderr,"[totk] DIAG main thread busy %llu ms (until %.3f s after the start)\n",(unsigned long long)ms,(runtime_now_ns()-bootStartNS)/1e9);
-     usleep(20000);
-    }});}
+  front_boot_frames();
   /* full screen from the start when the last session ended in it (front_start_fullscreen_wanted, front_fullscreen_enter) */
   if(front_start_fullscreen_wanted())
    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{front_fullscreen_enter("the start, as the last session ended");});

@@ -17200,6 +17200,9 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 
     CAMetalLayer *layer = (__bridge CAMetalLayer *)front_metal_layer();
     if (!layer) return 0;
+#if !TARGET_OS_IPHONE   // the Mac front end only (a weak symbol the iPhone link does not resolve)
+    { extern void front_boot_frames_stop(void) __attribute__((weak_import)); if (front_boot_frames_stop) front_boot_frames_stop(); }   // the front end's start-up frames (runtime/frontend.m) end before the game's first drawable
+#endif
 #if TARGET_OS_OSX
     if(totk_hdr_available() && front_hdr_present_mode){
         MTLPixelFormat want=hdrFrame?MTLPixelFormatRGBA16Float:MTLPixelFormatBGRA8Unorm;
@@ -17509,6 +17512,9 @@ static void *link_main(void *arg) {   // 显示节拍线程：切到节拍模式
     CAMetalLayer *layer = (__bridge CAMetalLayer *)front_metal_layer();
     pthread_mutex_lock(&g_pq_mu); g_link_owns_layer = 1; while (g_classic_busy) pthread_cond_wait(&g_pq_cv, &g_pq_mu); pthread_mutex_unlock(&g_pq_mu);   // 等出图线程手上那一帧交完 | Wait for the present thread to finish handing over the frame it holds
     NvMetalDisplayLinkDelegate *delegate = [NvMetalDisplayLinkDelegate new];
+#if !TARGET_OS_IPHONE   // the Mac front end only (a weak symbol the iPhone link does not resolve)
+    { extern void front_boot_frames_stop(void) __attribute__((weak_import)); if (front_boot_frames_stop) front_boot_frames_stop(); }   // and before its display link, which makes their nextDrawable throw
+#endif
     CAMetalDisplayLink *link = [[CAMetalDisplayLink alloc] initWithMetalLayer:layer];
     link.preferredFrameRateRange = link_range(g_link_mode);
     link.preferredFrameLatency = g_present_latency;
