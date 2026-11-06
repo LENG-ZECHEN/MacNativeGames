@@ -27,6 +27,7 @@ static NSWindow *window;
 static int fullScreenMoving;
 static void front_fullscreen_watch(const char *what,double wait);   /* below */
 static void front_fullscreen_left(void);   /* below */
+static int front_start_fullscreen_wanted(void);   /* below */
 static int front_window_resizable(void){return window&&!(window.styleMask&NSWindowStyleMaskFullScreen)&&!fullScreenMoving;}
 uint64_t dm_nvn_frame_count(void);   /* gfx/nvn/hle_nvn.c: game frames presented so far */
 static CAMetalLayer *metalLayer;
@@ -221,14 +222,12 @@ void front_frame_presented(void){
  if(atomic_fetch_add_explicit(&presentedFrames,1,memory_order_relaxed)==0){
   fprintf(stderr,"[totk-boot] %.3f first presented frame\n",(runtime_now_ns()-bootStartNS)/1e9);
   dispatch_async(dispatch_get_main_queue(), ^{if(!atomic_load(&warmPending)||atomic_load(&titleFree))boot_overlay_hide();});
-  /* Full screen from the start (user 2026-11-06), entered at the first frame: an entry before it could leave the window
-     off the full-screen Space (front_fullscreen_watch). TOTK_START_FULLSCREEN=0 keeps the window, as test starts
-     do (the launcher sets it for a start with its own TOTK_PROFILE_DIR; TOTK_WINDOW_SIZE, TOTK_WINDOW_FLOAT). */
-  {const char *e=getenv("TOTK_START_FULLSCREEN");
-   if(!(e&&!strcmp(e,"0"))&&!getenv("TOTK_WINDOW_SIZE")&&!getenv("TOTK_WINDOW_FLOAT"))
+  /* Full screen at the start when the last session ended in it (front_start_fullscreen_wanted), entered at the first
+     frame: an entry before it could leave the window off the full-screen Space (front_fullscreen_watch). */
+  {if(front_start_fullscreen_wanted())
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.3*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
      if(!window||(window.styleMask&NSWindowStyleMaskFullScreen)||fullScreenMoving)return;
-     fprintf(stderr,"[totk] full screen at the start (TOTK_START_FULLSCREEN=0 keeps the window)\n");
+     fprintf(stderr,"[totk] full screen at the start, as the last session ended (window-mode.txt)\n");
      [window toggleFullScreen:nil];
     });}
  }
@@ -778,6 +777,8 @@ static void front_guard_notice(void){
  if(mouseHeld){mouseHeld=NO;CGAssociateMouseAndMouseCursorPosition(true);[NSCursor unhide];}
  runtime_triggers_release();   /* _exit skips atexit; a save can also keep the game running a while without its window */
  front_guard_notice();
+ /* the next start opens the way this one ends (front_start_fullscreen_wanted); a test start leaves the player's choice alone */
+ {const char *e=getenv("TOTK_START_FULLSCREEN");if(!(e&&*e))runtime_setting_save("window-mode.txt",(window.styleMask&NSWindowStyleMaskFullScreen)?"fullscreen":"window","window mode");}
  if(!runtime_fs_save_busy()){fprintf(stderr,"[totk] window closed; graceful guest shutdown pending\n");runtime_cloud_save_quit();_exit(0);}
  fprintf(stderr,"[totk] window closed while the game is saving: quitting when the save is done\n");
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
@@ -812,6 +813,16 @@ int runtime_front_window_visible(void){return atomic_load(&windowVisible);}
    a black screen. TOTK_TEST_FULLSCREEN_HIDE=1 (tests): the window is ordered out once full screen is done; =2: also right
    after it is ordered in again (as in the real case), on the first entry only. */
 static unsigned fullScreenWatch;
+/* Full screen or the window at the start: the way the last session ended (window-mode.txt beside the other settings,
+   "fullscreen" / "window"; full screen when there is none yet, user 2026-11-06). TOTK_START_FULLSCREEN=1 / 0 decides
+   instead (the launcher sets 0 for a test start with its own TOTK_PROFILE_DIR); test windows (TOTK_WINDOW_SIZE,
+   TOTK_WINDOW_FLOAT) stay windows. */
+static int front_start_fullscreen_wanted(void){
+ if(getenv("TOTK_WINDOW_SIZE")||getenv("TOTK_WINDOW_FLOAT"))return 0;
+ const char *e=getenv("TOTK_START_FULLSCREEN");if(e&&*e)return strcmp(e,"0")!=0;
+ char word[32];if(runtime_setting_word("window-mode.txt",word,sizeof word))return strncmp(word,"window",6)!=0;
+ return 1;
+}
 /* Ordering the window in did not help in a real case (16:20): leaving full screen and entering it again did. The black
    entries all came before the game's first frame; an entry after it always showed. So after leaving, full screen is
    entered again once a frame has been presented and the window shows, at most twice per start. */
