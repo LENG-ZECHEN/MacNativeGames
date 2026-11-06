@@ -152,7 +152,7 @@ int nvn_fps_lock(void);
 /* Picking a resolution sizes the window to it at once (user 2026-10-25): 720p 1280x720, 1080p and 720p + MetalFX 1920x1080, MetalFX 2560x1440, native its own size (2K), 2K + MetalFX and native 4K 3840x2160, in the window's points as the first window (frontend.m runtime_front_run), the picture's shape kept
    (the aspect ratio picked) and shrunk to fit the screen's visible area. Full screen stays as it is. */
 static void settings_window_size(unsigned w,unsigned h,double ratio) {
- if(!window||(window.styleMask&NSWindowStyleMaskFullScreen))return;
+ if(!front_window_resizable())return;
  NSScreen *screen=window.screen?:NSScreen.mainScreen;if(!screen||!(ratio>0)||!w||!h)return;
  NSRect visible=screen.visibleFrame,content=[window contentRectForFrameRect:visible];
  CGFloat ch=round(fmin(h,fmin(content.size.height,content.size.width/ratio))),cw=round(ch*ratio);

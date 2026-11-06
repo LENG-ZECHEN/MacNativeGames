@@ -21,6 +21,11 @@
 #include "../third_party/d2r_gfx/gfx/nvn/totk_mfx_mode.h"
 #include "../third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
 static NSWindow *window;
+/* A full-screen transition is running (windowWill{Enter,Exit}FullScreen until it ends): the game does not resize the window
+   then. A resize in the middle of the animation (the settings' window size for the resolution, 0.2 s into a start) left a
+   black full-screen Space with the window "covered" (user 2026-11-06: full screen right after opening went black). */
+static int fullScreenMoving;
+static int front_window_resizable(void){return window&&!(window.styleMask&NSWindowStyleMaskFullScreen)&&!fullScreenMoving;}
 uint64_t dm_nvn_frame_count(void);   /* gfx/nvn/hle_nvn.c: game frames presented so far */
 static CAMetalLayer *metalLayer;
 static _Atomic float hdrHeadroom=1;
@@ -712,7 +717,7 @@ static void front_sync_drawable(void){
 void runtime_front_resize_aspect(double ratio){
  if(!isfinite(ratio)||ratio<0.5||ratio>8)return;
  dispatch_async(dispatch_get_main_queue(), ^{
-  if(!window||(window.styleMask&NSWindowStyleMaskFullScreen))return;
+  if(!front_window_resizable())return;
   NSScreen *screen=window.screen?:NSScreen.mainScreen;if(!screen)return;
   static NSSize lastSize;static CGFloat preferredHeight;
   NSRect oldFrame=window.frame;NSSize current=window.contentView.bounds.size;
@@ -767,8 +772,12 @@ static void front_guard_notice(void){
   fprintf(stderr,"[totk] save %s after %.2f s; quitting\n",runtime_fs_save_busy()?"still in progress (gave up)":"done",(runtime_now_ns()-t0)/1e9);runtime_cloud_save_quit();_exit(0);});
 }
 -(void)windowDidResize:(NSNotification *)n{(void)n;front_sync_drawable();}
--(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];front_sr_view();}
--(void)windowDidExitFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_sr_view();}
+-(void)windowWillEnterFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=1;}
+-(void)windowWillExitFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=1;}
+-(void)windowDidFailToEnterFullScreen:(NSWindow *)w{(void)w;fullScreenMoving=0;}
+-(void)windowDidFailToExitFullScreen:(NSWindow *)w{(void)w;fullScreenMoving=0;}
+-(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=0;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];front_sr_view();}
+-(void)windowDidExitFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=0;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_sr_view();}
 -(void)windowDidChangeScreen:(NSNotification *)n{(void)n;note_window_screen();front_sr_view();front_hdr_update();}
 /* Whether any part of the window can be seen (TOTK, 2026-10-16 night): macOS stops the display link's callbacks for a
    fully covered window, so presents stop and per-picture measurements of that stretch are void; a test session's log
