@@ -559,6 +559,8 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
         /* key 3's picture mode, kept between runs (runtime/game_patches_v143.c picture_mode_save / _restore) */
         setenv("TOTK_PICTURE_MODE", env_or("TOTK_PICTURE_MODE", [data stringByAppendingPathComponent:@"picture-mode.txt"]).fileSystemRepresentation, 1);
         setenv("TOTK_PROFILE_DIR", profile.fileSystemRepresentation, 1);
+        /* a test start (its own save folder) keeps the window unless it asks for full screen (runtime/frontend.m) */
+        if ([saveName isEqualToString:@"TOTK_PROFILE_DIR"]) setenv("TOTK_START_FULLSCREEN", "0", 0);
         setenv("TOTK_SHADER_CACHE", cache.fileSystemRepresentation, 1);
         setenv("TOTK_GAME_SLOT_DIR", slot.fileSystemRepresentation, 1);
         setenv("TOTK_ROMFS_PROOF_DIR", data.fileSystemRepresentation, 1);   // the app bundle stays read-only

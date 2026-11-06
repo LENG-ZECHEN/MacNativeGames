@@ -221,6 +221,16 @@ void front_frame_presented(void){
  if(atomic_fetch_add_explicit(&presentedFrames,1,memory_order_relaxed)==0){
   fprintf(stderr,"[totk-boot] %.3f first presented frame\n",(runtime_now_ns()-bootStartNS)/1e9);
   dispatch_async(dispatch_get_main_queue(), ^{if(!atomic_load(&warmPending)||atomic_load(&titleFree))boot_overlay_hide();});
+  /* Full screen from the start (user 2026-11-06), entered at the first frame: an entry before it could leave the window
+     off the full-screen Space (front_fullscreen_watch). TOTK_START_FULLSCREEN=0 keeps the window, as test starts
+     do (the launcher sets it for a start with its own TOTK_PROFILE_DIR; TOTK_WINDOW_SIZE, TOTK_WINDOW_FLOAT). */
+  {const char *e=getenv("TOTK_START_FULLSCREEN");
+   if(!(e&&!strcmp(e,"0"))&&!getenv("TOTK_WINDOW_SIZE")&&!getenv("TOTK_WINDOW_FLOAT"))
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.3*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+     if(!window||(window.styleMask&NSWindowStyleMaskFullScreen)||fullScreenMoving)return;
+     fprintf(stderr,"[totk] full screen at the start (TOTK_START_FULLSCREEN=0 keeps the window)\n");
+     [window toggleFullScreen:nil];
+    });}
  }
 }
 void runtime_boot_progress(const char *stage,uint64_t done,uint64_t total){
