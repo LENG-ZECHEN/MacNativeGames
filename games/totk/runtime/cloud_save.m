@@ -68,12 +68,28 @@ static NSArray<NSString *> *save_files(NSString *dir) { return save_files_all(di
 /* What says where the game is: storage/ (CacheStorageKey.dat and the like) is rewritten while nobody plays, so it is
    copied with the save but left out of its hash and of its time. */
 static NSArray<NSString *> *progress_files(NSString *dir) { return save_files_all(dir, YES); }
+/* iCloud Drive's conflict copies ("progress 2.sav", "000_Photo 3.jpg"): when two devices' uploads cross, it keeps the losing
+   files beside the others under such names. The game's own names have no spaces, so they are never part of a save; counted,
+   they made a complete folder look incomplete at every start (2026-11-06: 35 of them, generation 10 never loaded). */
+static BOOL conflict_copy(NSString *name) {
+    NSString *base = name.stringByDeletingPathExtension;
+    NSRange sp = [base rangeOfString:@" " options:NSBackwardsSearch];
+    if (sp.location == NSNotFound || sp.location + 1 >= base.length) return NO;
+    NSString *tail = [base substringFromIndex:sp.location + 1];
+    return [tail rangeOfCharacterFromSet:NSCharacterSet.decimalDigitCharacterSet.invertedSet].location == NSNotFound;
+}
+static void drop_conflict_copies(NSString *dir) {
+    int n = 0;
+    for (NSString *rel in [NSFileManager.defaultManager subpathsOfDirectoryAtPath:dir error:nil])
+        if (conflict_copy(rel.lastPathComponent) && [NSFileManager.defaultManager removeItemAtPath:[dir stringByAppendingPathComponent:rel] error:nil]) n++;
+    if (n) LOG("left out %d iCloud conflict copies (\"name 2.sav\" and the like)\n", n);
+}
 static NSArray<NSString *> *save_files_all(NSString *dir, BOOL progress_only) {
     NSMutableArray *out = [NSMutableArray array];
     NSDirectoryEnumerator *en = [NSFileManager.defaultManager enumeratorAtPath:dir];
     for (NSString *rel in en) {
         NSString *name = rel.lastPathComponent;
-        if ([name isEqualToString:@".DS_Store"] || [rel isEqualToString:@"sync.plist"] || ([name hasPrefix:@"."] && [name hasSuffix:@".icloud"])) continue;
+        if ([name isEqualToString:@".DS_Store"] || [rel isEqualToString:@"sync.plist"] || ([name hasPrefix:@"."] && [name hasSuffix:@".icloud"]) || conflict_copy(name)) continue;
         if (progress_only && [rel hasPrefix:@"storage/"]) continue;
         if ([en.fileAttributes.fileType isEqualToString:NSFileTypeRegular]) [out addObject:rel];
     }
@@ -316,7 +332,7 @@ void runtime_cloud_save_start(const char *save_dir, const char *profile_dir) {
             NSDictionary *m = read_cloud_meta([p stringByAppendingPathComponent:@"sync.plist"]);
             if (![m[@"gen"] isEqual:meta[@"gen"]] || ![save_hash(p) isEqualToString:m[@"hash"]]) { LOG("the folder's save is incomplete (still syncing); this device's save is used\n"); return; }
             if (localSaves && !backup(g_local, @"local")) return;
-            if (replace_folder(p, g_local)) { taken = YES; write_state(m[@"gen"], m[@"hash"]); LOG("loaded the save from %s (generation %lld)\n", [m[@"device"] UTF8String], [m[@"gen"] longLongValue]); }
+            if (replace_folder(p, g_local)) { drop_conflict_copies(g_local); taken = YES; write_state(m[@"gen"], m[@"hash"]); LOG("loaded the save from %s (generation %lld)\n", [m[@"device"] UTF8String], [m[@"gen"] longLongValue]); }
         });
         if (!taken && !g_identity_conflict) {
             g_held_hash = local;
