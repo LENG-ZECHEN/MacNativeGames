@@ -49,4 +49,4 @@ totk_key_layer totk_key_layer_of(const char *key);
 /* The in-game frame-rate button (touch_pad.m). The preset layer saves the choice under its own row; the custom layer
    keeps the cap in the pane, so the button only holds 30 until the next launch and saves nothing (NULL). */
 const char *totk_frame_button_key(int custom);
-int totk_frame_button_target(int now);   /* the next rate after now (runtime_phone_fps): 60 -> 40 -> 30 -> 60 */
+int totk_frame_button_target(int now);   /* the next rate after now (runtime_phone_fps): 60 <-> 40, 30 -> 60 */

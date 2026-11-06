@@ -157,7 +157,7 @@ int main(int argc, char **argv) {
     }
     /* The in-game button: the preset layer saves 30 / 60 in its own row; the custom layer leaves the pane's cap alone. */
     if (!totk_frame_button_key(0) || strcmp(totk_frame_button_key(0), "TOTK_PHONE_FPS") || totk_frame_button_key(1) ||
-        totk_frame_button_target(60) != 40 || totk_frame_button_target(40) != 30 || totk_frame_button_target(30) != 60) {
+        totk_frame_button_target(60) != 40 || totk_frame_button_target(40) != 60 || totk_frame_button_target(30) != 60) {
         failures++; fprintf(stderr, "the in-game frame-rate button mapping is wrong\n");
     }
 

@@ -159,7 +159,7 @@ static const CGFloat kFpsButtonSize = 34;
 - (CGPoint)fpsButton { return CGPointMake(CGRectGetMidX(self.area), self.topRow); }   // in the top row
 - (BOOL)fpsButtonAt:(CGPoint)p { CGPoint f = self.fpsButton; return hypot(p.x - f.x, p.y - f.y) < kFpsButtonSize * .75; }
 - (void)switchFrameRate {
-    /* 60 -> 40 -> 30 -> 60. The pane's two layers (settings_map.c): the preset layer saves the rate in its own row; the
+    /* 60 <-> 40 (30, set in Settings, goes to 60). The pane's two layers (settings_map.c): the preset layer saves the rate in its own row; the
        custom layer keeps the cap in the pane, so this only holds the rate until the next launch and saves nothing. */
     BOOL custom = [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_CUSTOM_PICTURE"];
     int fps = totk_frame_button_target(runtime_phone_fps());
