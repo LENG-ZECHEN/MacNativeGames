@@ -157,19 +157,24 @@ static void settings_window_size(unsigned w,unsigned h,double ratio) {
  NSRect visible=screen.visibleFrame,content=[window contentRectForFrameRect:visible];
  CGFloat ch=round(fmin(h,fmin(content.size.height,content.size.width/ratio))),cw=round(ch*ratio);
  NSRect old=window.frame,f=[window frameRectForContentRect:NSMakeRect(0,0,cw,ch)];
+ if(fabs(f.size.width-old.size.width)<1&&fabs(f.size.height-old.size.height)<1){fprintf(stderr,"[totk] settings: window already %.0fx%.0f for render %ux%u\n",cw,ch,w,h);return;}   /* the first size (settings_start_window_size) */
  f.origin=NSMakePoint(NSMidX(old)-f.size.width/2,NSMidY(old)-f.size.height/2);
  f.origin.x=fmax(NSMinX(visible),fmin(f.origin.x,NSMaxX(visible)-f.size.width));
  f.origin.y=fmax(NSMinY(visible),fmin(f.origin.y,NSMaxY(visible)-f.size.height));
  [window setFrame:f display:YES];
  fprintf(stderr,"[totk] settings: window %.0fx%.0f for render %ux%u\n",cw,ch,w,h);
 }
-static void settings_window_for(int mode) {
+static void settings_mode_size(int mode,unsigned *pw,unsigned *ph) {
  unsigned w=1920,h=1080;
  if(mode==OUTPUT_MODE_METALFX){w=2560;h=1440;}
  else if(mode==OUTPUT_MODE_NATIVE_METALFX||mode==OUTPUT_MODE_NATIVE_4K||mode==OUTPUT_MODE_NATIVE_4K_METALFX||mode==OUTPUT_MODE_NATIVE_6K){w=3840;h=2160;}
  else if(mode==OUTPUT_MODE_NATIVE_5K){w=5120;h=2880;}
  else if(mode==OUTPUT_MODE_720P){w=1280;h=720;}
  else if(mode==OUTPUT_MODE_NATIVE&&!runtime_output_native(mode,&w,&h)){w=1920;h=1080;}
+ *pw=w;*ph=h;
+}
+static void settings_window_for(int mode) {
+ unsigned w,h;settings_mode_size(mode,&w,&h);
  double ratio=runtime_aspect_ratio()>0?runtime_aspect_ratio():(double)w/h;
  settings_window_size(w,h,ratio);
 }
@@ -276,6 +281,23 @@ static void settings_restore_begin(void) {
   char *end;float ratio=strtof(word,&end);while(*end==' '||*end=='\n'||*end=='\r'||*end=='\t')end++;
   if(end!=word&&!*end&&isfinite(ratio)&&ratio>=0.5f&&ratio<=8)settingsPendingAspect=ratio;
  }
+}
+/* The window's first size: the one settings_restore_ready gives it a moment later (the saved resolution and picture ratio),
+   so the window appears at that size instead of being resized just after it shows. A click on the green button right
+   after that resize left full screen black (user 2026-11-06). 0 when the saved settings do not settle it before the game
+   runs (no saved ratio, the native mode whose size the game gives, an override in the environment). */
+static int settings_start_window_size(NSRect visible,NSWindowStyleMask mask,CGFloat *ww,CGFloat *wh) {
+ const char *output=getenv("TOTK_OUTPUT_RES");int v;char word[32],*end;
+ if(getenv("TOTK_WINDOW_SIZE")||getenv("TOTK_ASPECT")||(output&&*output&&strcmp(output,"auto"))||getenv("TOTK_MFX_OUTPUT")||getenv("TOTK_MFX_UPSCALE"))return 0;
+ if(!settings_read_int("graphics-output.txt",&v)||v>OUTPUT_MODE_LAST||v==OUTPUT_MODE_NATIVE)return 0;
+ if(!runtime_setting_word("graphics-aspect.txt",word,sizeof word))return 0;
+ float ratio=strtof(word,&end);while(*end==' '||*end=='\n'||*end=='\r'||*end=='\t')end++;
+ if(end==word||*end||!isfinite(ratio)||ratio<0.5f||ratio>8)return 0;
+ unsigned w,h;settings_mode_size(v,&w,&h);
+ NSRect content=[NSWindow contentRectForFrameRect:visible styleMask:mask];
+ CGFloat ch=round(fmin(h,fmin(content.size.height,content.size.width/ratio)));if(ch<180)return 0;
+ *wh=ch;*ww=round(ch*ratio);
+ return 1;
 }
 static void settings_restore_ready(void) {
  if(settingsPendingAspect>0&&runtime_aspect_ratio()>0){

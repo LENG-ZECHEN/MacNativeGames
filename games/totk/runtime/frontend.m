@@ -727,6 +727,7 @@ void runtime_front_resize_aspect(double ratio){
   CGFloat h=fmin(preferredHeight,fmin(content.size.height,content.size.width/ratio));
   if(h<=0)return;
   NSRect frame=[window frameRectForContentRect:NSMakeRect(0,0,round(h*ratio),round(h))];
+  if(fabs(frame.size.width-oldFrame.size.width)<1&&fabs(frame.size.height-oldFrame.size.height)<1){lastSize=current;return;}   /* already that size */
   frame.origin=NSMakePoint(NSMidX(oldFrame)-frame.size.width/2,NSMidY(oldFrame)-frame.size.height/2);
   frame.origin.x=fmax(NSMinX(visible),fmin(frame.origin.x,NSMaxX(visible)-frame.size.width));
   frame.origin.y=fmax(NSMinY(visible),fmin(frame.origin.y,NSMaxY(visible)-frame.size.height));
@@ -927,7 +928,11 @@ void runtime_front_run(void(*callback)(void)){
 #endif
   {const char *e=getenv("TOTK_WINDOW_SIZE");int w=0,h=0;if(e&&sscanf(e,"%dx%d",&w,&h)==2&&w>=320&&h>=180&&w<=8192&&h<=8192){ww=w;wh=h;}}
   CGFloat k=fmin(1,fmin(vis.size.width/ww,(vis.size.height-28)/wh));ww=floor(ww*k);wh=floor(wh*k);
-  window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,ww,wh) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+  NSWindowStyleMask mask=NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable;
+#if !defined(GAME_DKB) && !defined(GAME_POKOPIA)
+  {CGFloat sw,sh;if(settings_start_window_size(vis,mask,&sw,&sh)){ww=sw;wh=sh;fprintf(stderr,"[totk] window starts at %.0fx%.0f (the saved resolution and ratio)\n",ww,wh);}}
+#endif
+  window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,ww,wh) styleMask:mask backing:NSBackingStoreBuffered defer:NO];
   window.releasedWhenClosed=NO;   /* a close that waits for a save (windowWillClose) must not free the window the static pointer still holds */
   /* TOTK_WINDOW_FLOAT=1 (test scripts only): the window floats above the user's other windows, in the screen's top-right
      corner, so their work does not cover it: macOS stops the display link of a covered window and the game's presents stop
