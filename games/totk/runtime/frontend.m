@@ -1043,6 +1043,16 @@ void runtime_front_run(void(*callback)(void)){
   front_sr_view();
   [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){(void)n;note_window_screen();front_sr_view();}];   /* a refresh rate changed on the same screen */
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{note_occlusion(" 3 s after opening");});
+  /* DIAG (2026-11-06, temporary): the main thread's stalls over 50 ms in the first 20 s, against the full-screen steps */
+  {dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
+    while((runtime_now_ns()-bootStartNS)<20000000000ull){
+     __block _Atomic int done=0;uint64_t t0=runtime_now_ns();
+     dispatch_async(dispatch_get_main_queue(),^{atomic_store(&done,1);});
+     while(!atomic_load(&done))usleep(2000);
+     uint64_t ms=(runtime_now_ns()-t0)/1000000;
+     if(ms>=50)fprintf(stderr,"[totk] DIAG main thread busy %llu ms (until %.3f s after the start)\n",(unsigned long long)ms,(runtime_now_ns()-bootStartNS)/1e9);
+     usleep(20000);
+    }});}
   /* full screen from the start when the last session ended in it (front_start_fullscreen_wanted, front_fullscreen_enter) */
   if(front_start_fullscreen_wanted())
    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{front_fullscreen_enter("the start, as the last session ended");});
