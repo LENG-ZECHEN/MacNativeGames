@@ -25,6 +25,7 @@ static NSWindow *window;
    then. A resize in the middle of the animation (the settings' window size for the resolution, 0.2 s into a start) left a
    black full-screen Space with the window "covered" (user 2026-11-06: full screen right after opening went black). */
 static int fullScreenMoving;
+static void front_fullscreen_watch(const char *what,double wait);   /* below */
 static int front_window_resizable(void){return window&&!(window.styleMask&NSWindowStyleMaskFullScreen)&&!fullScreenMoving;}
 uint64_t dm_nvn_frame_count(void);   /* gfx/nvn/hle_nvn.c: game frames presented so far */
 static CAMetalLayer *metalLayer;
@@ -773,11 +774,11 @@ static void front_guard_notice(void){
   fprintf(stderr,"[totk] save %s after %.2f s; quitting\n",runtime_fs_save_busy()?"still in progress (gave up)":"done",(runtime_now_ns()-t0)/1e9);runtime_cloud_save_quit();_exit(0);});
 }
 -(void)windowDidResize:(NSNotification *)n{(void)n;front_sync_drawable();}
--(void)windowWillEnterFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=1;}
+-(void)windowWillEnterFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=1;front_fullscreen_watch("starts",3.0);}
 -(void)windowWillExitFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=1;}
 -(void)windowDidFailToEnterFullScreen:(NSWindow *)w{(void)w;fullScreenMoving=0;}
 -(void)windowDidFailToExitFullScreen:(NSWindow *)w{(void)w;fullScreenMoving=0;}
--(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=0;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];front_sr_view();}
+-(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=0;front_fullscreen_watch("done",1.0);[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];front_sr_view();}
 -(void)windowDidExitFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=0;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_sr_view();}
 -(void)windowDidChangeScreen:(NSNotification *)n{(void)n;note_window_screen();front_sr_view();front_hdr_update();}
 /* Whether any part of the window can be seen (TOTK, 2026-10-16 night): macOS stops the display link's callbacks for a
@@ -792,6 +793,30 @@ static void note_occlusion(const char *when){int v=(window.occlusionState&NSWind
 @end
 static TOTKWindowDelegate *windowDelegate;
 int runtime_front_window_visible(void){return atomic_load(&windowVisible);}
+/* Full screen that never shows the window (user 2026-11-06, a click on the green button a second after the start): macOS
+   made the full-screen Space and ended its animation, but left the game's window off it ("none" in WindowServer's log),
+   so the Space stayed black while the game drew on. A normal entry shows the window some 50 ms after the animation.
+   A while after the transition starts or ends, a window still not visible in full screen, with the game in front, is
+   ordered in again; if that does not show it either, full screen is left, so the player gets the window back instead of
+   a black screen. TOTK_TEST_FULLSCREEN_HIDE=1 (tests): the window is ordered out once full screen is done. */
+static unsigned fullScreenWatch;
+static void front_fullscreen_watch(const char *what,double wait){
+ unsigned gen=++fullScreenWatch;
+ fprintf(stderr,"[totk] full screen %s (%.3f s after the start)\n",what,(runtime_now_ns()-bootStartNS)/1e9);
+ {static int hidden;const char *t=getenv("TOTK_TEST_FULLSCREEN_HIDE");if(!hidden&&t&&!strcmp(t,"1")&&!strcmp(what,"done")){hidden=1;
+   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.2*NSEC_PER_SEC)),dispatch_get_main_queue(),^{fprintf(stderr,"[totk] test: window ordered out in full screen\n");[window orderOut:nil];});}}
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(wait*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+  if(gen!=fullScreenWatch||!(window.styleMask&NSWindowStyleMaskFullScreen)||(window.occlusionState&NSWindowOcclusionStateVisible)||!NSApp.isActive)return;
+  fprintf(stderr,"[totk] full screen: the window is not shown on its Space; ordering it in again\n");
+  [window makeKeyAndOrderFront:nil];
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.0*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+   if(gen!=fullScreenWatch||!(window.styleMask&NSWindowStyleMaskFullScreen)||!NSApp.isActive)return;
+   if(window.occlusionState&NSWindowOcclusionStateVisible){fprintf(stderr,"[totk] full screen: the window shows again\n");return;}
+   fprintf(stderr,"[totk] full screen: the window still does not show; leaving full screen\n");
+   [window toggleFullScreen:nil];
+  });
+ });
+}
 void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(), ^{[window performClose:nil];});}
 /* Save sync (runtime/cloud_save.m): the folder the saves are copied to, e.g. an iCloud Drive folder shared with the
    iPhone / iPad or another Apple ID. Stored in RUNTIME_SAVE_SYNC_DEFAULTS (TOTK_CLOUD_SAVE_FOLDER, read by app/launcher.m)
