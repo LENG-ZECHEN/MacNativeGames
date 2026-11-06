@@ -123,3 +123,8 @@ class CloudSave(unittest.TestCase):
             self.run_save(cloud, other, A, 'pull')
             self.assertEqual((other / f'save/{A}/progress.sav').read_text(), A)
             self.assertFalse((other / f'save/{A}/progress 2.sav').exists())
+            self.assertFalse((current / 'progress 2.sav').exists())   # cleaned from the folder too
+            (current / 'progress 2.sav').write_bytes(b'again')
+            self.run_save(cloud, other, A, 'pull')   # in sync now: still cleaned
+            self.assertFalse((current / 'progress 2.sav').exists())
+            self.assertEqual((current / 'progress.sav').read_text(), A)

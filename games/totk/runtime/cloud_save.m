@@ -84,6 +84,12 @@ static void drop_conflict_copies(NSString *dir) {
         if (conflict_copy(rel.lastPathComponent) && [NSFileManager.defaultManager removeItemAtPath:[dir stringByAppendingPathComponent:rel] error:nil]) n++;
     if (n) LOG("left out %d iCloud conflict copies (\"name 2.sav\" and the like)\n", n);
 }
+/* The folder's copy, once it is known to hold the save: its conflict copies go, under the writer's coordination, so they do
+   not pile up (iCloud keeps them across later uploads). Only such names are removed. */
+static void clean_cloud(NSString *cur) {
+    [[[NSFileCoordinator alloc] initWithFilePresenter:nil] coordinateWritingItemAtURL:[NSURL fileURLWithPath:cur] options:0 error:nil
+        byAccessor:^(NSURL *u) { drop_conflict_copies(u.path); }];
+}
 static NSArray<NSString *> *save_files_all(NSString *dir, BOOL progress_only) {
     NSMutableArray *out = [NSMutableArray array];
     NSDirectoryEnumerator *en = [NSFileManager.defaultManager enumeratorAtPath:dir];
@@ -247,6 +253,7 @@ static void push(void) {
             LOG("remote folder is incomplete; left untouched\n"); return;
         }
         if (!replace_folder(g_local, u.path)) return;
+        drop_conflict_copies(u.path);
         ok = [@{@"uid": g_user, @"gen": @(gen), @"device": NSProcessInfo.processInfo.hostName ?: @"?", @"time": @(NSDate.date.timeIntervalSince1970), @"hash": hash}
                  writeToFile:[u.path stringByAppendingPathComponent:@"sync.plist"] atomically:YES];
     }];
@@ -305,10 +312,10 @@ void runtime_cloud_save_start(const char *save_dir, const char *profile_dir) {
                the game uploads, after push looks again (or the next start, if a save has arrived by then). */
             LOG("no save in the folder yet%s\n", localSaves ? "; this device's save goes up at its first save in the game, if the folder is still empty then" : ""); return;
         }
-        if ([meta[@"hash"] isEqualToString:local]) { write_state(meta[@"gen"], local); LOG("in sync (generation %lld)\n", [meta[@"gen"] longLongValue]); return; }
+        if ([meta[@"hash"] isEqualToString:local]) { write_state(meta[@"gen"], local); LOG("in sync (generation %lld)\n", [meta[@"gen"] longLongValue]); clean_cloud(cur); return; }
         long long cloudGen = [meta[@"gen"] longLongValue], ownGen = [state[@"gen"] longLongValue];
         BOOL localChanged = localSaves && !(state && [state[@"hash"] isEqualToString:local]);
-        if (state && cloudGen == ownGen) { LOG("the folder has this device's last upload (generation %lld)\n", cloudGen); return; }   // new progress goes up with the next save
+        if (state && cloudGen == ownGen) { LOG("the folder has this device's last upload (generation %lld)\n", cloudGen); clean_cloud(cur); return; }   // new progress goes up with the next save
         if (state && cloudGen < ownGen) {
             /* An older generation than this device synced: another device wrote from an out-of-date view of the folder. This
                device's save is the newer one. */
@@ -334,6 +341,7 @@ void runtime_cloud_save_start(const char *save_dir, const char *profile_dir) {
             if (localSaves && !backup(g_local, @"local")) return;
             if (replace_folder(p, g_local)) { drop_conflict_copies(g_local); taken = YES; write_state(m[@"gen"], m[@"hash"]); LOG("loaded the save from %s (generation %lld)\n", [m[@"device"] UTF8String], [m[@"gen"] longLongValue]); }
         });
+        if (taken) clean_cloud(cur);
         if (!taken && !g_identity_conflict) {
             g_held_hash = local;
             LOG("the folder's newer save (generation %lld) is not loaded: this device's save goes up only after a new save in the game\n", cloudGen);
