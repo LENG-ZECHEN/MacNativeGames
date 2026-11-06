@@ -712,11 +712,24 @@ static void front_sr_view(void){
  totk_sr_view((int)px.width,(int)px.height,window.screen?(int)window.screen.maximumFramesPerSecond:0,(window.styleMask&NSWindowStyleMaskFullScreen)!=0);
 }
 static void front_sr_window(void){if(totk_sr_window&&window)totk_sr_window(window.isKeyWindow,runtime_front_window_visible()!=0);}
+/* Before the game's first frame the Metal layer has nothing in it (the start-up screen is a view above it). A window then
+   entered full screen, during the warm-up, was never put on the full-screen Space: the Space stayed black until a frame
+   came (user 2026-11-06: "in full screen during the warm-up it is black"). Each new drawable size before the first frame,
+   and the start of a full-screen transition, gets one frame of the start-up screen's colour. */
+static void front_present_blank(void){
+ if(!metalLayer||atomic_load(&presentedFrames))return;
+ static id<MTLCommandQueue> queue;if(!queue)queue=[metalLayer.device newCommandQueue];if(!queue)return;
+ id<CAMetalDrawable> d=[metalLayer nextDrawable];if(!d)return;
+ MTLRenderPassDescriptor *rp=[MTLRenderPassDescriptor renderPassDescriptor];
+ rp.colorAttachments[0].texture=d.texture;rp.colorAttachments[0].loadAction=MTLLoadActionClear;rp.colorAttachments[0].storeAction=MTLStoreActionStore;
+ rp.colorAttachments[0].clearColor=MTLClearColorMake(0.035,0.075,0.09,1);
+ id<MTLCommandBuffer> cb=[queue commandBuffer];[[cb renderCommandEncoderWithDescriptor:rp] endEncoding];[cb presentDrawable:d];[cb commit];
+}
 static void front_sync_drawable(void){
  NSView *v=window.contentView;if(!v||!metalLayer)return;
  CGFloat s=window.backingScaleFactor>0?window.backingScaleFactor:1,ts=drawable_scale();CGSize px=CGSizeMake(round(v.bounds.size.width*s*ts),round(v.bounds.size.height*s*ts));
  if(px.width<1||px.height<1||CGSizeEqualToSize(metalLayer.drawableSize,px))return;
- metalLayer.contentsScale=s;metalLayer.drawableSize=px;fprintf(stderr,"[totk] window drawable %.0fx%.0f (scale %.0f)\n",px.width,px.height,s);runtime_aspect_view(px.width,px.height);
+ metalLayer.contentsScale=s;metalLayer.drawableSize=px;fprintf(stderr,"[totk] window drawable %.0fx%.0f (scale %.0f)\n",px.width,px.height,s);runtime_aspect_view(px.width,px.height);front_present_blank();
  front_sr_view();
 }
 /* BotW, the settings panel's aspect ratio: the window takes the selected camera ratio. Keep the chosen height across toggles, even when a wide
@@ -782,11 +795,11 @@ static void front_guard_notice(void){
   fprintf(stderr,"[totk] save %s after %.2f s; quitting\n",runtime_fs_save_busy()?"still in progress (gave up)":"done",(runtime_now_ns()-t0)/1e9);runtime_cloud_save_quit();_exit(0);});
 }
 -(void)windowDidResize:(NSNotification *)n{(void)n;front_sync_drawable();}
--(void)windowWillEnterFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=1;front_fullscreen_watch("starts",3.0);}
+-(void)windowWillEnterFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=1;front_present_blank();front_fullscreen_watch("starts",3.0);}
 -(void)windowWillExitFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=1;}
 -(void)windowDidFailToEnterFullScreen:(NSWindow *)w{(void)w;fullScreenMoving=0;}
 -(void)windowDidFailToExitFullScreen:(NSWindow *)w{(void)w;fullScreenMoving=0;}
--(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=0;front_fullscreen_watch("done",1.0);[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];front_sr_view();}
+-(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=0;front_present_blank();front_fullscreen_watch("done",1.0);[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];front_sr_view();}
 -(void)windowDidExitFullScreen:(NSNotification *)n{(void)n;fullScreenMoving=0;front_fullscreen_left();[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_sr_view();}
 -(void)windowDidChangeScreen:(NSNotification *)n{(void)n;note_window_screen();front_sr_view();front_hdr_update();}
 /* Whether any part of the window can be seen (TOTK, 2026-10-16 night): macOS stops the display link's callbacks for a
@@ -832,7 +845,10 @@ static void front_fullscreen_enter(const char *why){
  if(!window||(window.styleMask&NSWindowStyleMaskFullScreen)){fullScreenWhenFront=0;return;}
  if(fullScreenMoving||(!atomic_load(&presentedFrames)&&strcmp(why,"the start, as the last session ended"))||!front_in_front()||!(window.occlusionState&NSWindowOcclusionStateVisible)){
   if(!fullScreenWhenFront)fprintf(stderr,"[totk] full screen (%s): waiting until the game shows and is in front\n",why);
-  fullScreenWhenFront=1;return;
+  fullScreenWhenFront=1;
+  /* checked twice a second too: a window that shows again does not always say so (no occlusion change, 16:46) */
+  {const char *w=why;dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{if(fullScreenWhenFront)front_fullscreen_enter(w);});}
+  return;
  }
  fullScreenWhenFront=0;
  fprintf(stderr,"[totk] full screen (%s): entering it (%.3f s after the start)\n",why,(runtime_now_ns()-bootStartNS)/1e9);
@@ -850,11 +866,17 @@ static void front_fullscreen_left(void){
  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.3*NSEC_PER_SEC)),dispatch_get_main_queue(),^{front_fullscreen_enter("again");});
 }
 /* The game is in front again (windowDidBecomeKey) or its window shows (note_occlusion). */
+static int fullScreenNotShown;   /* the watch saw full screen without the window while the game was elsewhere */
 static void front_fullscreen_front(void){
- dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.3*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
-  if(fullScreenWhenFront){front_fullscreen_enter("waited");return;}
-  if((window.styleMask&NSWindowStyleMaskFullScreen)&&!fullScreenMoving&&front_in_front()&&!(window.occlusionState&NSWindowOcclusionStateVisible))
-   front_fullscreen_leave_and_again("the window is not shown on its Space now the game is in front");
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.3*NSEC_PER_SEC)),dispatch_get_main_queue(),^{if(fullScreenWhenFront)front_fullscreen_enter("waited");});
+ /* Only after such a sighting, and after the switch to the Space has had its time: a window just switched back to is
+    not visible for a moment (16:49, a test's switch to the game read as a black full screen). */
+ if(!fullScreenNotShown)return;
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+  if(!(window.styleMask&NSWindowStyleMaskFullScreen)||fullScreenMoving||!front_in_front())return;
+  fullScreenNotShown=0;
+  if(window.occlusionState&NSWindowOcclusionStateVisible)return;
+  front_fullscreen_leave_and_again("the window is not shown on its Space now the game is in front");
  });
 }
 static void front_fullscreen_watch(const char *what,double wait){
@@ -864,7 +886,7 @@ static void front_fullscreen_watch(const char *what,double wait){
    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.2*NSEC_PER_SEC)),dispatch_get_main_queue(),^{fprintf(stderr,"[totk] test: window ordered out in full screen\n");[window orderOut:nil];});}}
  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(wait*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
   if(gen!=fullScreenWatch||!(window.styleMask&NSWindowStyleMaskFullScreen)||fullScreenMoving||(window.occlusionState&NSWindowOcclusionStateVisible))return;
-  if(!front_in_front()){fprintf(stderr,"[totk] full screen: the window is not shown, and the game is not in front: waiting until it is\n");return;}
+  if(!front_in_front()){fullScreenNotShown=1;fprintf(stderr,"[totk] full screen: the window is not shown, and the game is not in front: waiting until it is\n");return;}
   front_fullscreen_leave_and_again("the window is not shown on its Space");
  });
 }
