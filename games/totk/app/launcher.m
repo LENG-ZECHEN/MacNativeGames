@@ -56,15 +56,6 @@ static NSString *log_crash_reason(NSString *log) {
         return @"程序报错退出";
     return nil;
 }
-/* The launcher's alerts run before the game's window and event loop exist. An alert only hidden after runModal stayed one of
-   the app's windows, and the game window that followed could not be put on a full-screen Space: entered full screen,
-   it stayed black until the player clicked the game (2026-11-06, every start through the save picker, reproduced with
-   TOTK_TEST_PICKER=1). Each alert's window is closed once it is answered. */
-static NSModalResponse launcher_modal(NSAlert *alert) {
-    NSModalResponse r = [alert runModal];
-    [alert.window orderOut:nil]; [alert.window close];
-    return r;
-}
 /* At start, for the player (TOTK_SLOT_OWNER user): when the previous run's log shows a crash, keep a copy of it
    (kept_log.h) before this run rewrites the log, and say so. Agents' test games are left alone. */
 static void crash_notice(NSString *log) {
@@ -84,7 +75,7 @@ static void crash_notice(NSString *log) {
     [alert addButtonWithTitle:@"继续开游戏"];
     if (kept) [alert addButtonWithTitle:@"在访达中显示"];
     [NSApplication sharedApplication]; [NSApp activateIgnoringOtherApps:YES];
-    if (launcher_modal(alert) == NSAlertSecondButtonReturn && kept)
+    if ([alert runModal] == NSAlertSecondButtonReturn && kept)
         [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:kept]]];
 }
 
@@ -92,7 +83,7 @@ static void show_error(NSString *detail) {
     NSAlert *alert = [NSAlert new];
     alert.messageText = @"The game could not start";
     alert.informativeText = detail;
-    launcher_modal(alert);
+    [alert runModal];
 }
 
 /* Whether a game controller is connected: a HID joystick / gamepad (DualSense, Pro Controller, Xbox over Bluetooth),
@@ -155,7 +146,7 @@ static pid_t running_game(NSString *slot) {
 static void note(NSString *text) {
     NSAlert *alert = [NSAlert new];
     alert.messageText = text;
-    launcher_modal(alert);
+    [alert runModal];
 }
 
 /* Saves sync (runtime/cloud_save.m): a start with no sync folder offers to choose one, before the game reads its save, so
@@ -171,7 +162,7 @@ static NSString *cloud_folder_offer(NSUserDefaults *sync) {
     [alert addButtonWithTitle:@(TOTK_UI("选择文件夹…", "Choose Folder…"))];
     [alert addButtonWithTitle:@(TOTK_UI("以后再说", "Not Now"))];
     [alert addButtonWithTitle:@(TOTK_UI("不要再问", "Don't Ask Again"))];
-    NSModalResponse choice = launcher_modal(alert);
+    NSModalResponse choice = [alert runModal];
     if (choice == NSAlertThirdButtonReturn) [sync setBool:YES forKey:@"TOTK_CLOUD_SAVE_ASKED"];
     if (choice != NSAlertFirstButtonReturn) return nil;
     NSOpenPanel *panel = [NSOpenPanel openPanel];
@@ -207,7 +198,7 @@ static void contrib_reminder(NSString *path) {
     [alert addButtonWithTitle:gh ? @(TOTK_UI("自动提交", "Submit automatically")) : @(TOTK_UI("下次提醒", "Remind me next time"))];
     [alert addButtonWithTitle:@(TOTK_UI("不要提醒了", "Don't remind me again"))];
     [alert addButtonWithTitle:@(TOTK_UI("⭐ 喜欢就点个 Star", "⭐ Like it? Star it on GitHub"))];
-    NSModalResponse choice = launcher_modal(alert);
+    NSModalResponse choice = [alert runModal];
     if (choice == NSAlertThirdButtonReturn + 1) [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@TOTK_REPO_URL]];
     if (choice == NSAlertThirdButtonReturn) totk_contrib_never(path);
     if (choice == NSAlertSecondButtonReturn && gh) {
@@ -295,7 +286,7 @@ static NSString *pick_profile(NSString *data, NSString **name) {
                        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     BOOL step = label.length && access([data stringByAppendingPathComponent:@"before-start"].fileSystemRepresentation, X_OK) == 0;
     if (step) { alert.showsSuppressionButton = YES; alert.suppressionButton.title = label; alert.suppressionButton.state = NSControlStateValueOn; }
-    NSInteger i = launcher_modal(alert) - NSAlertFirstButtonReturn;
+    NSInteger i = [alert runModal] - NSAlertFirstButtonReturn;
     if (step) setenv("TOTK_BEFORE_START", alert.suppressionButton.state == NSControlStateValueOn ? "1" : "0", 1);
     if (i < 0 || i >= (NSInteger)names.count) return @"";
     *name = names[i];
@@ -308,13 +299,6 @@ static NSString *pick_profile(NSString *data, NSString **name) {
    phone pick the same save by the same id. Returns the id (TOTK_USER_ID for runtime/account.c), nil to keep the marked
    user, @"" when cancelled. A start that names TOTK_USER_ID or TOTK_PROFILE_DIR (test tools) is not asked. */
 static NSString *pick_user(NSString *profile) {
-    /* TOTK_TEST_PICKER=1 (tests): the picker shows with two made-up users, whatever the profile, and the start goes on
-       with the profile's own user (what the window does after this alert, 2026-11-06 full-screen tests) */
-    if (getenv("TOTK_TEST_PICKER") && !strcmp(getenv("TOTK_TEST_PICKER"), "1")) {
-        [NSApplication sharedApplication]; [NSApp activateIgnoringOtherApps:YES];
-        NSAlert *alert = [NSAlert new]; alert.messageText = @"选择存档 / Choose a save (test)";
-        [alert addButtonWithTitle:@"A"]; [alert addButtonWithTitle:@"B"]; launcher_modal(alert); return nil;
-    }
     if ((getenv("TOTK_USER_ID") && *getenv("TOTK_USER_ID")) || (getenv("TOTK_PROFILE_DIR") && *getenv("TOTK_PROFILE_DIR"))) return nil;
     NSString *text = [NSString stringWithContentsOfFile:[profile stringByAppendingPathComponent:@"users.txt"] encoding:NSUTF8StringEncoding error:nil];
     NSMutableArray<NSString *> *names = [NSMutableArray array], *ids = [NSMutableArray array];
@@ -335,7 +319,7 @@ static NSString *pick_user(NSString *profile) {
     alert.informativeText = @"Return 打开上次玩的，Esc 取消。\nReturn opens the one played last, Esc cancels.";
     for (NSString *n in names) [alert addButtonWithTitle:n];
     [alert addButtonWithTitle:@"取消 / Cancel"].keyEquivalent = @"\033";
-    NSInteger i = launcher_modal(alert) - NSAlertFirstButtonReturn;
+    NSInteger i = [alert runModal] - NSAlertFirstButtonReturn;
     if (i < 0 || i >= (NSInteger)names.count) return @"";
     return ids[i];
 }
@@ -377,7 +361,7 @@ static NSString *game_data_ask(NSArray<NSString *> *looked, unsigned long long s
         [alert addButtonWithTitle:@(TOTK_UI("选择文件夹…", "Choose Folder…"))];
         [alert addButtonWithTitle:@(TOTK_UI("重试", "Try Again"))];
         [alert addButtonWithTitle:@(TOTK_UI("退出", "Quit"))];
-        NSModalResponse choice = launcher_modal(alert);
+        NSModalResponse choice = [alert runModal];
         if (choice == NSAlertThirdButtonReturn) return nil;
         if (choice == NSAlertSecondButtonReturn) {
             for (NSString *folder in looked) { NSString *found = game_data_in(folder, size, sha); if (found) return found; }
@@ -414,7 +398,7 @@ static int update_check_run(void) {
 static void update_say(NSString *text, BOOL problem) {
     NSAlert *alert = [NSAlert new]; alert.alertStyle = problem ? NSAlertStyleWarning : NSAlertStyleInformational;
     alert.messageText = problem ? @(TOTK_UI("更新没有成功", "The update did not work")) : @(GAME_NAME);
-    alert.informativeText = text; [alert addButtonWithTitle:@"OK"]; [NSApp activateIgnoringOtherApps:YES]; launcher_modal(alert);
+    alert.informativeText = text; [alert addButtonWithTitle:@"OK"]; [NSApp activateIgnoringOtherApps:YES]; [alert runModal];
 }
 static NSString *update_by_hand(void) {
     NSString *repo = update_info(@"MNGSourceRepo") ?: @(TOTK_UI("你的项目文件夹", "your checkout"));

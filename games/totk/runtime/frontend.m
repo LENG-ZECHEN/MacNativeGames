@@ -711,12 +711,11 @@ static void front_sr_view(void){
  totk_sr_view((int)px.width,(int)px.height,window.screen?(int)window.screen.maximumFramesPerSecond:0,(window.styleMask&NSWindowStyleMaskFullScreen)!=0);
 }
 static void front_sr_window(void){if(totk_sr_window&&window)totk_sr_window(window.isKeyWindow,runtime_front_window_visible()!=0);}
-/* The start-up screen in the Metal layer, the way the game's frames come (user 2026-11-06). Before the game's first frame
-   the layer had nothing in it, or (2026-11-06 afternoon) a single frame when the drawable changed size: full screen
-   entered then sometimes never put the window on its Space (black until a click), while in the game, where frames come
-   all the time, it never failed. So from the window's start the start-up screen's colour is presented every display
-   frame (60 Hz, on its own queue: nextDrawable can wait), until the game presents its first frame; the start-up texts
-   and progress bar stay views above the layer. */
+/* The start-up screen in the Metal layer, the way the game's frames come (user 2026-11-06): before the game's first frame
+   the layer had nothing in it, and a window entered full screen then could stay off the full-screen Space. From the
+   window's start the start-up screen's colour is presented every display frame (60 Hz, on its own queue: nextDrawable
+   can wait), until the game takes the layer (front_boot_frames_stop) or has shown a frame; the start-up texts and
+   progress bar stay views above the layer. */
 static dispatch_queue_t bootFramesQueue;static dispatch_source_t bootFrames;static _Atomic int bootFramesOn;
 /* gfx/nvn/nvn_mtl.m, before the game takes the layer (its first nextDrawable, its CAMetalDisplayLink, which makes another
    nextDrawable throw: a start-up frame then ended the game, 2026-11-06 17:58): no start-up frame after this returns. */
@@ -734,7 +733,9 @@ static void front_boot_frames(void){
  dispatch_source_set_cancel_handler(timer,^{fprintf(stderr,"[totk] start-up frames: %llu, until the game took the layer\n",(unsigned long long)n);});
  atomic_store(&bootFramesOn,1);
  dispatch_source_set_event_handler(timer,^{
-  if(!bootFrames||!atomic_load(&bootFramesOn)||atomic_load(&presentedFrames))return;
+  if(!bootFrames||!atomic_load(&bootFramesOn))return;
+  /* a present path that did not call front_boot_frames_stop (another game's) has shown a frame: stop here too */
+  if(atomic_load(&presentedFrames)){atomic_store(&bootFramesOn,0);dispatch_source_cancel(bootFrames);bootFrames=nil;return;}
   @autoreleasepool{
    id<CAMetalDrawable> d=[metalLayer nextDrawable];if(!d)return;
    MTLRenderPassDescriptor *rp=[MTLRenderPassDescriptor renderPassDescriptor];
@@ -834,11 +835,11 @@ static void note_occlusion(const char *when){int v=(window.occlusionState&NSWind
 @end
 static TOTKWindowDelegate *windowDelegate;
 int runtime_front_window_visible(void){return atomic_load(&windowVisible);}
-/* Full screen and the start (user 2026-11-06). macOS puts a window on its full-screen Space only once the window has drawn
-   at the new size (front_boot_frames keeps frames coming before the game's first one), and only while the game is in
-   front: entered with the game elsewhere (a trackpad swipe to another Space during the start), the Space stays black
-   until the player clicks the game, and the game cannot bring itself to the front. So the game enters full screen itself
-   only while it is in front and its window shows, else as soon as that holds. */
+/* Full screen and the start (user 2026-11-06). A full-screen entry whose window stayed off the new Space (black until a
+   click) had three causes: nothing drawn in the layer yet (front_boot_frames), the last step of the transition waiting
+   for an input event (front_fullscreen_nudge), and an entry while the game was not in front (a trackpad swipe to another
+   Space during the start; the game cannot bring itself to the front). So the game enters full screen itself only while
+   it is in front and its window shows, else as soon as that holds. */
 /* Full screen or the window at the start: the way the last session ended (window-mode.txt beside the other settings,
    "fullscreen" / "window"; full screen when there is none yet). TOTK_START_FULLSCREEN=1 / 0 decides instead (the
    launcher sets 0 for a test start with its own TOTK_PROFILE_DIR); test windows (TOTK_WINDOW_SIZE, TOTK_WINDOW_FLOAT)
