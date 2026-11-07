@@ -1,9 +1,13 @@
-/* A Nintendo Switch 2 Pro Controller over Bluetooth LE, on macOS and iOS (third_party/ns2pad).
+/* A Nintendo Switch 2 Pro Controller over Bluetooth LE, on macOS and iOS, or over its USB cable on a Mac
+   (third_party/ns2pad).
 
-   GameController does not adopt this controller, so ns2pad reads it in our own process with CoreBluetooth: it scans,
-   connects, turns the sensors on and calls back on its own serial queue with each input report (about 30 a second on a
-   Mac, the Bluetooth connection interval's limit). Only one program can hold the controller at a time; to pair it, hold
-   the small button on its top edge until the four lights sweep.
+   GameController does not adopt this controller, so ns2pad reads it in our own process: over Bluetooth with
+   CoreBluetooth (it scans, connects, turns the sensors on; about 30 input reports a second on a Mac, the Bluetooth
+   connection interval's limit), and on a Mac also over the cable (IOUSBHost for the commands, IOHIDManager for the
+   reports; about 250 a second). It calls back on its own serial queue with each input report. When the same controller
+   is on both, only the cable is used; unplugging it drops the controller until it comes back over Bluetooth (press a
+   button). Only one program can hold the controller at a time; to pair it, hold the small button on its top edge until
+   the four lights sweep.
 
    - Buttons and sticks: runtime_gamepad_ns2pad (gamepad.m) as the same physical bits gamepad_buttons() produces, face
      buttons by position (B bottom, A right, Y left, X top), so controls.txt and the key bindings apply unchanged.
@@ -16,7 +20,8 @@
    - Rumble: gamepad_feedback.m sends the game's two bands as two motor strengths (ns2pad_set_rumble).
    - Battery: the HUD's controller battery (an estimate from the voltage).
 
-   TOTK_NS2PAD=0 leaves Bluetooth alone (no scan, no permission prompt). */
+   TOTK_NS2PAD=0 leaves the controller alone (no scan, no Bluetooth permission prompt). TOTK_NS2PAD=usb takes it only
+   over the cable (Bluetooth untouched), TOTK_NS2PAD=ble only over Bluetooth. */
 #import <Foundation/Foundation.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -90,7 +95,8 @@ static void ns2_connected(void *user, int pad, const ns2pad_info *info) {   /* n
     runtime_gamepad_ns2pad(1, 0, 0, 0, 0, 0);
     runtime_feedback_ns2pad(1, ns2_rumble);
     ns2_changed();
-    fprintf(stderr, "[totk-input] %s connected over Bluetooth LE (ns2pad), face buttons by position\n", info->name);
+    fprintf(stderr, "[totk-input] %s connected over %s (ns2pad), face buttons by position\n", info->name,
+            strncmp(info->identifier, "usb-", 4) ? "Bluetooth LE" : "USB");
     if (runtime_gyro_enabled()) fprintf(stderr, "[gyro] %s: motion sensors on (gyro, gravity)%s\n", info->name, info->imu_enabled ? "" : " -- the controller did not confirm turning them on");
 }
 
@@ -121,7 +127,13 @@ void runtime_ns2pad_start(void) {   /* main thread, once */
     ns2pad_callbacks cb = {ns2_connected, ns2_disconnected, ns2_state, ns2_log};
     ns2pad_config cfg;
     ns2pad_config_default(&cfg);
+    if (env && !strcmp(env, "usb")) cfg.bluetooth = false;
+    else if (env && !strcmp(env, "ble")) cfg.usb = false;
+#if !TARGET_OS_OSX
+    cfg.usb = false;
+#endif
     int r = ns2pad_start(&cb, NULL, &cfg);
     if (r) fprintf(stderr, "[ns2pad] did not start (%d)\n", r);
-    else fprintf(stderr, "[ns2pad] %s: looking for a Switch 2 Pro Controller over Bluetooth LE\n", ns2pad_version());
+    else fprintf(stderr, "[ns2pad] %s: looking for a Switch 2 Pro Controller over %s\n", ns2pad_version(),
+                 cfg.bluetooth && cfg.usb ? "Bluetooth LE or USB" : cfg.bluetooth ? "Bluetooth LE" : "USB");
 }

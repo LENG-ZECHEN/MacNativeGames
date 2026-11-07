@@ -85,8 +85,11 @@ enum {
 /* 写到 0x0016 的命令前面要有 1 字节报告 ID（0）+ 左右两段各 16 字节震动数据 = 33 字节。 */
 #define NS2_COMBINED_PREFIX_PRO    0x21
 
-/* 输入报告 0x05 的长度（蓝牙下不带报告 ID）：0x3F = 63 字节，抓包实测。 */
+/* 输入报告 0x05 的长度（蓝牙下不带报告 ID）：0x3F = 63 字节，抓包实测。
+   USB 下从 HID 接口读到的是 64 字节：报告 ID 0x05 + 同样的 63 字节。 */
 #define NS2_INPUT05_SIZE           0x3F
+/* USB 下读闪存用 0x02/0x01，每次固定 0x40 字节；响应 0x50 字节（8 字节头 + 长度/地址 8 字节 + 数据），分两个 64 字节包到。 */
+#define NS2_USB_FLASH_LEN          0x40
 /* Pro 2 震动输出报告 0x02 的长度：1 + 16 + 16 + 9 = 42 字节（hid_reports.md）。 */
 #define NS2_OUTPUT02_SIZE          0x2A
 
@@ -138,7 +141,7 @@ typedef struct ns2_response {
    返回 true 表示格式正确（方向字节是 0x01）。 */
 bool ns2_parse_response(const uint8_t *p, size_t n, size_t prefix, ns2_response *out);
 
-/* 响应是否表示成功（ack == 0x78）。 */
+/* 响应是否表示成功（蓝牙下 ack == 0x78，USB 下实测是 0xF8）。 */
 bool ns2_response_ok(const ns2_response *r);
 
 /* 闪存读取（0x02/0x04）响应的数据部分：长度、地址、内容。成功返回 true。 */
@@ -274,6 +277,8 @@ typedef struct ns2_session_options {
     float stick_deadzone;
     uint64_t step_timeout_ns;    /* 每步等响应的时间，默认 600 ms */
     int max_retries;             /* 每步最多重发次数，默认 2 */
+    bool usb;                    /* 走 USB：命令头的传输字节是 0x00，读闪存用 0x02/0x01，0x11 的子命令是 1，
+                                    握手最后多几步（设报告格式 0x05、开始输出），见 docs/protocol.md 的 USB 一节 */
 } ns2_session_options;
 
 void ns2_session_options_default(ns2_session_options *o);
@@ -294,6 +299,10 @@ typedef enum ns2_init_step {
     NS2_STEP_CMD11,               /* 0x11/0x03，内核说震动要靠它才稳定 */
     NS2_STEP_VIBRATION_CONFIG,    /* 0x0A/0x08，任天堂主机和 SDL 都发的一段固定数据，含义未知 */
     NS2_STEP_ENABLE_FEATURES,
+    NS2_STEP_USB_01_0C,           /* 以下只在 USB 下发（SDL 的 USB 初始化顺序），不等响应 */
+    NS2_STEP_USB_01_01,           /* SDL 注释为 "Enable rumble" */
+    NS2_STEP_USB_REPORT_FORMAT,   /* 0x03/0x0A：输入报告用 0x05 格式 */
+    NS2_STEP_USB_START_OUTPUT,    /* 0x03/0x0D：开始从 HID 接口发输入报告 */
     NS2_STEP_DONE
 } ns2_init_step;
 

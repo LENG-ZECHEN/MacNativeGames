@@ -1,7 +1,8 @@
 # ns2pad (vendored)
 
-The Nintendo Switch 2 Pro Controller over Bluetooth LE, read in the game's own process with CoreBluetooth
-(no driver, no system-wide gamepad). Copied unchanged from ns2pad commit `bc95428`:
+The Nintendo Switch 2 Pro Controller over Bluetooth LE (CoreBluetooth), or on a Mac also over its USB cable (IOUSBHost +
+IOHIDManager, about 250 reports a second), read in the game's own process
+(no driver, no system-wide gamepad). Copied unchanged from ns2pad commit `157114c`:
 
 - `include/ns2pad.h` - the C API
 - `core/ns2_core.c`, `core/ns2_core.h` - the protocol (C99, no platform code)

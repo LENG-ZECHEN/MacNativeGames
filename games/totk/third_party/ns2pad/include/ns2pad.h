@@ -222,6 +222,13 @@ typedef struct ns2pad_config {
     /* 连接手柄的型号白名单，以 0 结尾。默认只连 Pro 2（{NS2PAD_PID_PRO2, 0}）。
        Joy-Con 2 等其他型号的输入格式这一版没有适配，连上也只有按键和摇杆是对的。 */
     uint16_t accept_product_ids[8];
+
+    /* 只有 macOS：也接受插着 USB 线的手柄（约 250 帧/秒，蓝牙约 30 帧/秒）。同一只手柄两条路都连着时只用 USB。
+       默认 true。iOS 上没有作用。 */
+    bool usb;
+
+    /* 用蓝牙。默认 true。设成 false 就只认 USB 线（不创建蓝牙管理器，不会弹蓝牙权限）。 */
+    bool bluetooth;
 } ns2pad_config;
 
 /* 一条 HD 震动"帧"的原始参数。 */
@@ -246,6 +253,7 @@ void ns2pad_config_default(ns2pad_config *config);
 
 /* 启动：创建蓝牙管理器并开始扫描。callbacks 内容会被复制；user 原样传给每个回调。
    config 为 NULL 时用默认选项。
+   macOS 上同时监视 USB（config.usb）：已经插着的和之后插上的手柄都会连上，拔线后断开。
    返回 0 成功；已经启动过返回 -1；当前平台不支持返回 -2。
    第一次调用时系统会弹出蓝牙权限请求（App 和命令行工具都需要 NSBluetoothAlwaysUsageDescription）。 */
 int ns2pad_start(const ns2pad_callbacks *callbacks, void *user, const ns2pad_config *config);

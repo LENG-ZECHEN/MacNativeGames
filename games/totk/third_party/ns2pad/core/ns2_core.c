@@ -104,11 +104,11 @@ bool ns2_parse_response(const uint8_t *p, size_t n, size_t prefix, ns2_response 
     return true;
 }
 
-bool ns2_response_ok(const ns2_response *r) { return r && r->ack == 0x78; }
+bool ns2_response_ok(const ns2_response *r) { return r && (r->ack & 0x7F) == 0x78; }
 
 bool ns2_parse_flash_read(const ns2_response *r, uint32_t *address, const uint8_t **bytes, size_t *len) {
     /* 响应数据：长度(1) 填充(3) 地址(4) 内容 */
-    if (!r || r->cmd != NS2_CMD_FLASH || r->sub != 0x04 || r->data_len < 8) return false;
+    if (!r || r->cmd != NS2_CMD_FLASH || (r->sub != 0x04 && r->sub != 0x01) || r->data_len < 8) return false;
     size_t n = r->data[0];
     if (n == 0 || r->data_len < 8 + n) return false;
     if (address) *address = rd32(r->data + 4);
@@ -317,24 +317,36 @@ typedef struct step_desc {
     uint8_t len;
     bool required;    /* 失败会让 poll 最后返回 FAILED */
     bool no_retry;    /* 等一次超时就继续，不重发（两份抓包里 0x0C/0x02 都没有收到响应） */
+    bool no_wait;     /* 发完就进下一步，不等响应 */
 } step_desc;
 
 static const step_desc k_steps[NS2_STEP_DONE] = {
-    [NS2_STEP_CMD07]             = {NS2_CMD_07, 0x01, 0, 0, false, false},
-    [NS2_STEP_READ_DEVICE_INFO]  = {NS2_CMD_FLASH, 0x04, 0x13000, 0x40, false, false},
-    [NS2_STEP_CMD16]             = {NS2_CMD_16, 0x01, 0, 0, false, false},
-    [NS2_STEP_CONNECT_VIBRATION] = {NS2_CMD_VIBRATION, 0x02, 0, 0, false, false},
-    [NS2_STEP_PLAYER_LEDS]       = {NS2_CMD_LED, 0x07, 0, 0, false, false},
-    [NS2_STEP_SET_FEATURE_MASK]  = {NS2_CMD_FEATURE, 0x02, 0, 0, false, true},
-    [NS2_STEP_READ_LEFT_STICK]   = {NS2_CMD_FLASH, 0x04, 0x13080, 0x40, false, false},
-    [NS2_STEP_READ_RIGHT_STICK]  = {NS2_CMD_FLASH, 0x04, 0x130C0, 0x40, false, false},
-    [NS2_STEP_READ_USER_LEFT]    = {NS2_CMD_FLASH, 0x04, 0x1FC040, 0x0B, false, false},
-    [NS2_STEP_READ_USER_RIGHT]   = {NS2_CMD_FLASH, 0x04, 0x1FC080, 0x0B, false, false},
-    [NS2_STEP_READ_GYRO_BIAS]    = {NS2_CMD_FLASH, 0x04, 0x13040, 0x10, false, false},
-    [NS2_STEP_CMD11]             = {NS2_CMD_11, 0x03, 0, 0, false, false},
-    [NS2_STEP_VIBRATION_CONFIG]  = {NS2_CMD_VIBRATION, 0x08, 0, 0, false, false},
-    [NS2_STEP_ENABLE_FEATURES]   = {NS2_CMD_FEATURE, 0x04, 0, 0, true, false},
+    [NS2_STEP_CMD07]             = {NS2_CMD_07, 0x01, 0, 0, false, false, false},
+    [NS2_STEP_READ_DEVICE_INFO]  = {NS2_CMD_FLASH, 0x04, 0x13000, 0x40, false, false, false},
+    [NS2_STEP_CMD16]             = {NS2_CMD_16, 0x01, 0, 0, false, false, false},
+    [NS2_STEP_CONNECT_VIBRATION] = {NS2_CMD_VIBRATION, 0x02, 0, 0, false, false, false},
+    [NS2_STEP_PLAYER_LEDS]       = {NS2_CMD_LED, 0x07, 0, 0, false, false, false},
+    [NS2_STEP_SET_FEATURE_MASK]  = {NS2_CMD_FEATURE, 0x02, 0, 0, false, true, false},
+    [NS2_STEP_READ_LEFT_STICK]   = {NS2_CMD_FLASH, 0x04, 0x13080, 0x40, false, false, false},
+    [NS2_STEP_READ_RIGHT_STICK]  = {NS2_CMD_FLASH, 0x04, 0x130C0, 0x40, false, false, false},
+    [NS2_STEP_READ_USER_LEFT]    = {NS2_CMD_FLASH, 0x04, 0x1FC040, 0x0B, false, false, false},
+    [NS2_STEP_READ_USER_RIGHT]   = {NS2_CMD_FLASH, 0x04, 0x1FC080, 0x0B, false, false, false},
+    [NS2_STEP_READ_GYRO_BIAS]    = {NS2_CMD_FLASH, 0x04, 0x13040, 0x10, false, false, false},
+    [NS2_STEP_CMD11]             = {NS2_CMD_11, 0x03, 0, 0, false, false, false},
+    [NS2_STEP_VIBRATION_CONFIG]  = {NS2_CMD_VIBRATION, 0x08, 0, 0, false, false, false},
+    [NS2_STEP_ENABLE_FEATURES]   = {NS2_CMD_FEATURE, 0x04, 0, 0, true, false, false},
+    [NS2_STEP_USB_01_0C]         = {NS2_CMD_NFC, 0x0C, 0, 0, false, false, true},
+    [NS2_STEP_USB_01_01]         = {NS2_CMD_NFC, 0x01, 0, 0, false, false, true},
+    [NS2_STEP_USB_REPORT_FORMAT] = {NS2_CMD_INIT, 0x0A, 0, 0, false, false, true},
+    [NS2_STEP_USB_START_OUTPUT]  = {NS2_CMD_INIT, 0x0D, 0, 0, false, false, true},
 };
+
+/* 这一步实际用的子命令：USB 下读闪存是 0x01，0x11 是 1。 */
+static uint8_t step_sub(const ns2_session *s, ns2_init_step step) {
+    if (s->opts.usb && k_steps[step].cmd == NS2_CMD_FLASH) return 0x01;
+    if (s->opts.usb && step == NS2_STEP_CMD11) return 0x01;
+    return k_steps[step].sub;
+}
 
 static size_t build_step(const ns2_session *s, ns2_init_step step, uint8_t *out, size_t cap) {
     const step_desc *d = &k_steps[step];
@@ -345,6 +357,11 @@ static size_t build_step(const ns2_session *s, ns2_init_step step, uint8_t *out,
     case NS2_STEP_READ_USER_LEFT:
     case NS2_STEP_READ_USER_RIGHT:
     case NS2_STEP_READ_GYRO_BIAS:
+        if (s->opts.usb) {
+            uint8_t a[8] = {NS2_USB_FLASH_LEN, 0x00, 0x00, 0x00, (uint8_t)d->address, (uint8_t)(d->address >> 8),
+                            (uint8_t)(d->address >> 16), (uint8_t)(d->address >> 24)};
+            return ns2_build_command(out, cap, NS2_CMD_FLASH, 0x01, a, sizeof a);
+        }
         return ns2_build_flash_read(out, cap, d->address, d->len);
     case NS2_STEP_CONNECT_VIBRATION:
         return ns2_build_vibration_sample(out, cap, 0x03);
@@ -360,14 +377,26 @@ static size_t build_step(const ns2_session *s, ns2_init_step step, uint8_t *out,
                                          0x00, 0x46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
         return ns2_build_command(out, cap, NS2_CMD_VIBRATION, 0x08, data, sizeof data);
     }
+    case NS2_STEP_USB_REPORT_FORMAT: {
+        static const uint8_t data[4] = {0x05, 0x00, 0x00, 0x00};
+        return ns2_build_command(out, cap, NS2_CMD_INIT, 0x0A, data, sizeof data);
+    }
+    case NS2_STEP_USB_START_OUTPUT: {
+        static const uint8_t data[8] = {0x01, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+        return ns2_build_command(out, cap, NS2_CMD_INIT, 0x0D, data, sizeof data);
+    }
     default:
-        return ns2_build_command(out, cap, d->cmd, d->sub, NULL, 0);
+        return ns2_build_command(out, cap, d->cmd, step_sub(s, step), NULL, 0);
     }
 }
 
 static void finish_tx(const ns2_session *s, ns2_tx *tx, const uint8_t *cmd, size_t len) {
     tx->channel = 0;
-    if (s->opts.use_combined_channel) {
+    if (s->opts.usb) {
+        memcpy(tx->bytes, cmd, len);
+        tx->len = len;
+        if (len > 2) tx->bytes[2] = NS2_TRANSPORT_USB;
+    } else if (s->opts.use_combined_channel) {
         tx->len = ns2_wrap_combined(tx->bytes, sizeof tx->bytes, cmd, len);
     } else {
         memcpy(tx->bytes, cmd, len);
@@ -382,6 +411,7 @@ static void advance(ns2_session *s) {
 }
 
 static bool step_skipped(const ns2_session *s, ns2_init_step step) {
+    if (step >= NS2_STEP_USB_01_0C && !s->opts.usb) return true;
     return step == NS2_STEP_CONNECT_VIBRATION && !s->opts.connect_vibration;
 }
 
@@ -389,6 +419,10 @@ ns2_poll_result ns2_session_poll(ns2_session *s, uint64_t now_ns, ns2_tx *tx) {
     uint8_t cmd[64];
     while (s->step < NS2_STEP_DONE) {
         if (step_skipped(s, s->step)) {
+            advance(s);
+            continue;
+        }
+        if (s->step_sent && k_steps[s->step].no_wait) {
             advance(s);
             continue;
         }
@@ -490,7 +524,7 @@ bool ns2_session_on_response(ns2_session *s, const uint8_t *p, size_t n, size_t 
     if (!ns2_parse_response(p, n, prefix, &r)) return false;
     if (s->step >= NS2_STEP_DONE || !s->step_sent) return true;
     const step_desc *d = &k_steps[s->step];
-    if (r.cmd != d->cmd || r.sub != d->sub) return true; /* 不是在等的那条（例如后来才到的重发响应） */
+    if (r.cmd != d->cmd || r.sub != step_sub(s, s->step)) return true; /* 不是在等的那条（例如后来才到的重发响应） */
 
     if (d->cmd == NS2_CMD_FLASH) {
         uint32_t addr;
